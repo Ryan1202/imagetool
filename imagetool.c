@@ -102,8 +102,12 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 		}
 	}
 
+	int pos = 0;
 	do {
+		fseek(from, pos, SEEK_SET);
 		tmp = fread(buf, 1, SECTOR_SIZE, from);
+		part->fsi->seek(ffi, fp, fnode, pos, SEEK_SET);
 		part->fsi->write(ffi, fp, fnode, (uint8_t *)buf, tmp);
+		pos += tmp;
 	} while (tmp == SECTOR_SIZE);
 }

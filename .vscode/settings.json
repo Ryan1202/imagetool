@@ -3,10 +3,11 @@
     "files.associations": {
         "ff.h": "c",
         "fs.h": "c",
-        "stddef.h": "c",
         "math.h": "c",
         "fat32.h": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "stdint.h": "c",
+        "stdint-gcc.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled",
     "C_Cpp.clang_format_path": "",
@@ -15,7 +16,10 @@
     "C_Cpp.codeAnalysis.clangTidy.checks.disabled": [
         "clang-analyzer-unix.MallocSizeof",
         "clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling",
-        "clang-diagnostic-unused-value"
+        "clang-diagnostic-unused-value",
+        "clang-diagnostic-error",
+        "clang-diagnostic-error",
+        "clang-diagnostic-error"
     ],
     "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools"
 }

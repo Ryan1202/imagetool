@@ -39,6 +39,7 @@ struct fsi {
 							 char *filename);
 	struct fnode *(*opendir)(struct ffi *ffi, FILE *fp, struct _partition_s *part, char *path);
 	void (*close)(struct fnode *fnode);
+	void (*seek)(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint32_t offset, int fromwhere);
 	void (*read)(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer, uint32_t length);
 	void (*write)(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer, uint32_t length);
 	struct fnode *(*createfile)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,

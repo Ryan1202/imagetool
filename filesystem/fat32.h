@@ -25,6 +25,7 @@
 #define FAT32_BASE_L 0x08
 #define FAT32_EXT_L	 0x10
 
+#pragma pack(1)
 struct FS_Info {
 	unsigned int FSI_LeadSig;
 	unsigned char FSI_Reserved1[480];
@@ -35,6 +36,7 @@ struct FS_Info {
 	unsigned int FSI_TrailSig;
 } __attribute__((packed));
 
+#pragma pack(1)
 struct pt_fat32 {
 	unsigned char BS_jmpBoot[3];
 	unsigned char BS_OEMName[8];
@@ -79,6 +81,7 @@ struct FAT_clus_list {
 	struct FAT_clus_list *next;
 };
 
+#pragma pack(1)
 struct FAT32_dir {
 	unsigned char DIR_Name[8];
 	unsigned char DIR_Ext[3];
@@ -95,6 +98,7 @@ struct FAT32_dir {
 	unsigned int DIR_FileSize;
 } __attribute__((packed));
 
+#pragma pack(1)
 struct FAT32_long_dir {
 	unsigned char LDIR_Ord;
 	unsigned short LDIR_Name1[5];
@@ -117,11 +121,13 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 								char *name, int len);
 void FAT32_delete_file(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode);
 void FAT32_close(struct fnode *fnode);
-int fat32_alloc_clus(struct ffi *ffi, FILE *fp, partition_t *part, int last_clus);
+int fat32_alloc_clus(struct ffi *ffi, FILE *fp, partition_t *part, int last_clus, int first);
 int fat32_free_clus(struct ffi *ffi, FILE *fp, partition_t *part, int last_clus, int clus);
-unsigned int find_member_in_fat(struct ffi *ffi, FILE *fp, struct _partition_s *part, int i);
+uint32_t find_member_in_fat(struct ffi *ffi, FILE *fp, struct _partition_s *part, uint32_t i);
 struct fnode *FAT32_open_dir(struct ffi *ffi, FILE *fp, struct _partition_s *part, char *path);
 struct fnode *FAT32_find_dir(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
 							 char *name);
+uint32_t fat_next(struct ffi *ffi, FILE *fp, struct _partition_s *part, uint32_t clus, int next, int alloc);
+void FAT32_seek(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint32_t offset, int fromwhere);
 
 extern struct fsi fat32_fsi;
