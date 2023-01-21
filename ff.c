@@ -1,7 +1,7 @@
 #include "ff.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdint.h>
 
 struct ffi *ff_init(FILE *fp, char *filename) {
 	struct ffi *ffi;

@@ -7,11 +7,11 @@ void raw_write(FILE *fp, uint8_t *buffer, uint32_t size);
 void raw_seek(FILE *fp, long offset, int origin);
 
 struct ffi raw_ffi = {
-    &raw_check,
-    &raw_init,
-    &raw_read,
-    &raw_write,
-    &raw_seek
+	.check = &raw_check,
+	.init  = &raw_init,
+	.read  = &raw_read,
+	.write = &raw_write,
+	.seek  = &raw_seek,
 };
 
 int raw_check(FILE *fp) {

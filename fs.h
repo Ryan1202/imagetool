@@ -1,8 +1,11 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdio.h>
 
-#define SECTOR_SIZE	512
+#include "ff.h"
+
+#define SECTOR_SIZE 512
 
 typedef struct _partition_s {
 	char *name;
@@ -36,15 +39,19 @@ struct fsi {
 	int (*check)(struct ffi *ffi, FILE *fp, struct partition *pt);
 	int (*read_superblock)(struct ffi *ffi, FILE *fp, struct _partition_s *partition);
 	struct fnode *(*open)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
-							 char *filename);
+						  char *filename);
 	struct fnode *(*opendir)(struct ffi *ffi, FILE *fp, struct _partition_s *part, char *path);
 	void (*close)(struct fnode *fnode);
 	void (*seek)(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint32_t offset, int fromwhere);
 	void (*read)(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer, uint32_t length);
 	void (*write)(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer, uint32_t length);
 	struct fnode *(*createfile)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
-								   char *name, int len);
+								char *name, int len);
 	void (*delete)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode);
+	struct fnode *(*mkdir)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
+						   char *name, int len);
+	uint8_t (*get_attr)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode);
+	void (*set_attr)(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode, uint8_t attr);
 };
 
-void fs_init(partition_t *p[4], struct ffi *ffi, FILE *fp, int origin);
+void fs_init(struct _partition_s *p[4], struct ffi *ffi, FILE *fp, int origin);

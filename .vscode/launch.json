@@ -11,8 +11,8 @@
             "program": "${workspaceFolder}/imgtool",
             "args": [
                 "test.img",
-                "copy",
-                "LICENSE",
+                "mkdir",
+                "Folder",
                 "/p0/"
             ],
             "stopAtEntry": false,

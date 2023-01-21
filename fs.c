@@ -1,15 +1,15 @@
-#include "ff.h"
 #include "fs.h"
-#include <stdio.h>
+#include "ff.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
-#include "filesystem/fat32.h"
+extern struct fsi fat32_fsi;
 
-void fs_init(partition_t *p[4], struct ffi *ffi, FILE *fp, int origin) {
+void fs_init(struct _partition_s *p[4], struct ffi *ffi, FILE *fp, int origin) {
 	int i;
 	struct fsi *fsi;
-	uint8_t *buffer = malloc(4 * sizeof(struct partition));
+	uint8_t *buffer = (uint8_t *)malloc(4 * sizeof(struct partition));
 	struct partition *pt;
 
 	ffi->seek(fp, 0x1be, origin);
@@ -17,12 +17,11 @@ void fs_init(partition_t *p[4], struct ffi *ffi, FILE *fp, int origin) {
 	for (i = 0; i < 4; i++) {
 		pt = (struct partition *)(buffer + i * sizeof(struct partition));
 		if (pt->sign == 0x80 || pt->sign == 0x00) {
-			p[i] = malloc(sizeof(partition_t));
+			p[i] = (partition_t *)malloc(sizeof(partition_t));
 			if (pt->fs_type == 0x05 || pt->fs_type == 0x0f) { // 扩展分区（不保证能用）
 				fs_init(p[i]->childs, ffi, fp, pt->start_lba);
 				continue;
-			}
-			else if (fat32_fsi.check(ffi, fp, pt) == 0) {
+			} else if (fat32_fsi.check(ffi, fp, pt) == 0) {
 				fsi = &fat32_fsi;
 			} else {
 				free(p[i]);
@@ -30,7 +29,7 @@ void fs_init(partition_t *p[4], struct ffi *ffi, FILE *fp, int origin) {
 				continue;
 			}
 			p[i]->start = pt->start_lba;
-			p[i]->fsi = fsi;
+			p[i]->fsi	= fsi;
 			fsi->read_superblock(ffi, fp, p[i]);
 		}
 	}

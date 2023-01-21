@@ -6,6 +6,7 @@
 
 void do_commands(int argc, char **argv, partition_t *pt[4], struct ffi *ffi, FILE *fp);
 void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst);
+void mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst);
 
 int main(int argc, char **argv) {
 	FILE *fp;
@@ -15,7 +16,7 @@ int main(int argc, char **argv) {
 	if (argc < 2) {
 		exit(-1);
 	} else if (argc < 3) {
-		printf("Need Commmand!");
+		printf("Need Commmand!\n");
 		exit(-1);
 	}
 	fp = fopen(argv[1], "rb+");
@@ -25,7 +26,7 @@ int main(int argc, char **argv) {
 	}
 	ffi = ff_init(fp, argv[1]);
 	if (ffi == NULL) {
-		printf("Unknown file format!");
+		printf("Unknown file format!\n");
 		fclose(fp);
 		exit(-1);
 	}
@@ -61,12 +62,18 @@ partition_t *get_part(char *path, partition_t *pt[4], int *p) {
 void do_commands(int argc, char **argv, partition_t *pt[4], struct ffi *ffi, FILE *fp) {
 	if (strcmp(argv[0], "copy") == 0) {
 		if (argc < 3) {
-			printf("Too few arguments!");
+			printf("Too few arguments!\n");
 			exit(-1);
 		}
 		copy_file(pt, ffi, fp, argv[1], argv[2]);
+	} else if (strcmp(argv[0], "mkdir") == 0) {
+		if (argc < 3) {
+			printf("Too few arguments!\n");
+			exit(-1);
+		}
+		mkdir(pt, ffi, fp, argv[1], argv[2]);
 	} else {
-		printf("Command Error!");
+		printf("Command Error!\n");
 	}
 }
 
@@ -87,17 +94,20 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 	to	 = dst;
 	part = get_part(dst, pt, &i);
 	if (part == NULL) {
-		printf("Unknown path: %s!\n", dst);
+		printf("Unknown path  \"%s\"!\n", dst);
 		exit(-1);
 	}
 	to += i;
 	parent = part->fsi->opendir(ffi, fp, part, to);
-	if (parent == NULL) { printf("Can't Find %s", dst); }
+	if (parent == NULL) {
+		printf("Can't Find \"%s\"\n", dst);
+		exit(-1);
+	}
 	fnode = part->fsi->open(ffi, fp, part, parent, p);
 	if (fnode == NULL) {
 		fnode = part->fsi->createfile(ffi, fp, part, parent, p, strlen(p));
 		if (fnode == NULL) {
-			printf("Create file %s failed!\n", p);
+			printf("Create file \"%s\" failed!\n", p);
 			exit(-1);
 		}
 	}
@@ -110,4 +120,30 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 		part->fsi->write(ffi, fp, fnode, (uint8_t *)buf, tmp);
 		pos += tmp;
 	} while (tmp == SECTOR_SIZE);
+}
+
+void mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst) {
+	int i, len1, len2;
+	char *s;
+	partition_t *part;
+	struct fnode *parent;
+
+	len1 = strlen(src);
+	len2 = strlen(dst);
+	s	 = malloc(len2 + len1);
+	strncpy(s, dst, len2);
+	strncpy(s + len2, src, len1);
+	part = get_part(dst, pt, &i);
+	dst += i;
+	parent = part->fsi->opendir(ffi, fp, part, s + i);
+	free(s);
+	if (parent == NULL) {
+		parent = part->fsi->opendir(ffi, fp, part, dst);
+		if (parent == NULL) {
+			printf("Can't find dir \"%s\"\n", dst);
+			exit(-1);
+		}
+		part->fsi->mkdir(ffi, fp, part, parent, src, len1);
+	}
+	printf("Dir \"%s\" existed.\n", src);
 }

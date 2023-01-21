@@ -17,6 +17,17 @@
 
 * command: 命令
     * copy 将主机文件复制到映像
+        
+        示例
+
+            imgtool hd.img copy file.txt /p0/
+
+    * mkdir 创建文件夹
+        
+        示例
+
+            imgtool hd.img mkdir folder /p0/
+
 
 * source: 部分命令使用的源文件路径
 

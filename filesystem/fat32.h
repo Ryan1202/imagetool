@@ -117,6 +117,8 @@ struct fnode *FAT32_open(struct ffi *ffi, FILE *fp, struct _partition_s *part, s
 void FAT32_close(struct fnode *fnode);
 void FAT32_read(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer, uint32_t length);
 void FAT32_write(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer, uint32_t length);
+struct fnode *FAT32_mkdir(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
+						  char *name, int len);
 struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
 								char *name, int len);
 void FAT32_delete_file(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode);
@@ -129,5 +131,7 @@ struct fnode *FAT32_find_dir(struct ffi *ffi, FILE *fp, struct _partition_s *par
 							 char *name);
 uint32_t fat_next(struct ffi *ffi, FILE *fp, struct _partition_s *part, uint32_t clus, int next, int alloc);
 void FAT32_seek(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint32_t offset, int fromwhere);
+uint8_t FAT32_get_attr(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode);
+void FAT32_set_attr(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode, uint8_t attr);
 
 extern struct fsi fat32_fsi;
