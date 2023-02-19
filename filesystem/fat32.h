@@ -121,6 +121,8 @@ struct fnode *FAT32_mkdir(struct ffi *ffi, FILE *fp, struct _partition_s *part, 
 						  char *name, int len);
 struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
 								char *name, int len);
+struct fnode *FAT32_create_dir(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *parent,
+							   char *name, int len, int type);
 void FAT32_delete_file(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct fnode *fnode);
 void FAT32_close(struct fnode *fnode);
 int fat32_alloc_clus(struct ffi *ffi, FILE *fp, partition_t *part, int last_clus, int first);

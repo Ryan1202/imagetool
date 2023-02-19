@@ -1,12 +1,9 @@
+#include "imagetool.h"
 #include "ff.h"
 #include "fs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-void do_commands(int argc, char **argv, partition_t *pt[4], struct ffi *ffi, FILE *fp);
-void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst);
-void mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst);
 
 int main(int argc, char **argv) {
 	FILE *fp;
@@ -66,6 +63,12 @@ void do_commands(int argc, char **argv, partition_t *pt[4], struct ffi *ffi, FIL
 			exit(-1);
 		}
 		copy_file(pt, ffi, fp, argv[1], argv[2]);
+	} else if (strcmp(argv[0], "copydir") == 0) {
+		if (argc < 3) {
+			printf("Too few arguments!\n");
+			exit(-1);
+		}
+		copy_dir(pt, ffi, fp, argv[1], argv[2]);
 	} else if (strcmp(argv[0], "mkdir") == 0) {
 		if (argc < 3) {
 			printf("Too few arguments!\n");
@@ -85,34 +88,48 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 	partition_t *part;
 	struct fnode *parent, *fnode;
 
-	from = fopen(src, "rb+");
-	if (fp == NULL) {
-		perror("imgtool:");
-		exit(-1);
+	from = fopen(src, "rb");
+	if (from == NULL) {
+		perror("File open error");
+		return;
 	}
-	p	 = src;
-	to	 = dst;
+
+	p  = src;
+	to = dst;
+
+	i = strlen(src) - 1;
+	while (i >= 0 && p[i] != '/')
+		i--;
+	p += i + 1;
+	i = 0;
+
 	part = get_part(dst, pt, &i);
+
 	if (part == NULL) {
 		printf("Unknown path  \"%s\"!\n", dst);
-		exit(-1);
+		fclose(from);
+		return;
 	}
 	to += i;
 	parent = part->fsi->opendir(ffi, fp, part, to);
 	if (parent == NULL) {
-		printf("Can't Find \"%s\"\n", dst);
-		exit(-1);
+		printf("Can't find directory \"%s\"\n", dst);
+		fclose(from);
+		return;
 	}
 	fnode = part->fsi->open(ffi, fp, part, parent, p);
 	if (fnode == NULL) {
 		fnode = part->fsi->createfile(ffi, fp, part, parent, p, strlen(p));
 		if (fnode == NULL) {
 			printf("Create file \"%s\" failed!\n", p);
-			exit(-1);
+			fclose(from);
+			return;
 		}
+		printf("Create file \"%s\".", src);
 	}
 
 	int pos = 0;
+	printf("Copying %s\n", src);
 	do {
 		fseek(from, pos, SEEK_SET);
 		tmp = fread(buf, 1, SECTOR_SIZE, from);
@@ -120,6 +137,7 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 		part->fsi->write(ffi, fp, fnode, (uint8_t *)buf, tmp);
 		pos += tmp;
 	} while (tmp == SECTOR_SIZE);
+	fclose(from);
 }
 
 void mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst) {
@@ -130,20 +148,21 @@ void mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst) 
 
 	len1 = strlen(src);
 	len2 = strlen(dst);
-	s	 = malloc(len2 + len1);
+	s	 = malloc(len2 + len1 + 1);
 	strncpy(s, dst, len2);
 	strncpy(s + len2, src, len1);
-	part = get_part(dst, pt, &i);
+	s[len1 + len2] = 0;
+	part		   = get_part(dst, pt, &i);
 	dst += i;
 	parent = part->fsi->opendir(ffi, fp, part, s + i);
 	free(s);
 	if (parent == NULL) {
 		parent = part->fsi->opendir(ffi, fp, part, dst);
 		if (parent == NULL) {
-			printf("Can't find dir \"%s\"\n", dst);
-			exit(-1);
+			printf("Can't find directory \"%s\"\n", dst);
+			return;
 		}
 		part->fsi->mkdir(ffi, fp, part, parent, src, len1);
+		printf("Create directory \"%s\"\n", src);
 	}
-	printf("Dir \"%s\" existed.\n", src);
 }

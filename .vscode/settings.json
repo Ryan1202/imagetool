@@ -1,13 +1,15 @@
 {
     "C_Cpp.clang_format_fallbackStyle": "LLVM",
     "files.associations": {
+        "*.ssml": "xml",
         "ff.h": "c",
         "fs.h": "c",
         "math.h": "c",
         "fat32.h": "c",
         "stdio.h": "c",
         "stdint.h": "c",
-        "stdint-gcc.h": "c"
+        "stdint-gcc.h": "c",
+        "systemspec.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled",
     "C_Cpp.clang_format_path": "",

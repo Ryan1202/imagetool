@@ -28,6 +28,12 @@
 
             imgtool hd.img mkdir folder /p0/
 
+    * copydir 复制文件夹下的所有文件和子文件夹
+        
+        示例
+
+            imgtool hd.img copydir folder /p0/
+
 
 * source: 部分命令使用的源文件路径
 

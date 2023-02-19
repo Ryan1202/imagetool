@@ -11,12 +11,12 @@
             "program": "${workspaceFolder}/imgtool",
             "args": [
                 "test.img",
-                "mkdir",
-                "Folder",
+                "copydir",
+                "./fs/",
                 "/p0/"
             ],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
+            "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": false,
             "MIMode": "gdb",

@@ -119,14 +119,12 @@ void FAT32_write(struct ffi *ffi, FILE *fp, struct fnode *fnode, uint8_t *buffer
 	if (fnode->offset % SECTOR_SIZE + length <= SECTOR_SIZE) goto done; // 只写一个扇区时写完退出
 	else {
 		length -= SECTOR_SIZE - off;
-		tmp = find_member_in_fat(ffi, fp, fnode->part, pos);
-		if (tmp >= 0x0ffffff8) pos = tmp;
-		else return;
+		pos = fat_next(ffi, fp, fnode->part, fnode->pos, cnt, 1);
 	}
 
 	i = 0;
 	while (length > 0) {
-		if (i % 2 == 0 && i != 0) {
+		if (i % fat32->BPB_SecPerClus == 0 && i != 0) {
 			pos = fat_next(ffi, fp, fnode->part, pos, 1, 1);
 			if (pos == 0) return;
 		}
@@ -148,7 +146,7 @@ done:
 		sdir->DIR_FileSize = fnode->offset + length;
 		fnode->size		   = fnode->offset + length;
 	}
-	sdir->DIR_LastAccDate = sdir->DIR_WrtDate = (p->tm_year - 1980) << 9 | p->tm_mon << 5 | p->tm_mday;
+	sdir->DIR_LastAccDate = sdir->DIR_WrtDate = (p->tm_year - 80) << 9 | p->tm_mon << 5 | p->tm_mday;
 	sdir->DIR_WrtTime						  = p->tm_hour << 11 | p->tm_min << 5 | p->tm_sec;
 	ffi->seek(fp, (fat32->data_start + (pos - 2) * fat32->BPB_SecPerClus) * SECTOR_SIZE, SEEK_SET);
 	ffi->write(fp, (uint8_t *)buf, SECTOR_SIZE);
@@ -177,13 +175,11 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 	fnode->part	  = part;
 	fnode->parent = parent;
 	pos			  = parent->pos;
+	offset		  = (pos - 2) * fat32->BPB_SecPerClus + i / SECTOR_SIZE;
+	ffi->seek(fp, (offset + fat32->data_start) * SECTOR_SIZE, SEEK_SET);
+	ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
 	do {
-		// 如果到了下一个扇区，重新读取
-		if (i % SECTOR_SIZE == 0) {
-			offset = (pos - 2) * fat32->BPB_SecPerClus + i / SECTOR_SIZE;
-			ffi->seek(fp, (offset + fat32->data_start) * SECTOR_SIZE, SEEK_SET);
-			ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
-		}
+		if (buf[0] == 0) break;
 		/**
 		 * 统计短目录项重名个数（只在目录项是长文件名时使用）
 		 * 如有重名，则短目录名以以下格式命名: SAMEFI~N.TXT (假设原名为samefilename.txt)
@@ -202,20 +198,23 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 		i += 0x20;
 
 		// 如果到了下一个簇，则获取下一个簇号
-		if (i / SECTOR_SIZE / fat32->BPB_SecPerClus && i % (SECTOR_SIZE * fat32->BPB_SecPerClus)) {
-			tmp = find_member_in_fat(ffi, fp, part, pos);
-			// 如果簇不够了，分配新的簇
-			if (tmp >= 0x0ffffff8) pos = fat32_alloc_clus(ffi, fp, part, pos, 0);
-			else pos = tmp;
+		if (i / SECTOR_SIZE / fat32->BPB_SecPerClus && i % (SECTOR_SIZE * fat32->BPB_SecPerClus) == 0) {
+			pos	   = fat_next(ffi, fp, part, pos, 1, 1);
+			offset = (pos - 2) * fat32->BPB_SecPerClus + i / SECTOR_SIZE;
+			ffi->seek(fp, (offset + fat32->data_start) * SECTOR_SIZE, SEEK_SET);
+			ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
 		}
-	} while (buf[i]);
+	} while (buf[i % SECTOR_SIZE]);
 
 	flag = 0;
-	pos	 = ((pos - 2) * fat32->BPB_SecPerClus) * SECTOR_SIZE + i;
-	int len_without_ext;
-	int len_ext;
+	pos	 = ((pos - 2) * fat32->BPB_SecPerClus * SECTOR_SIZE) + (i % (fat32->BPB_SecPerClus * SECTOR_SIZE));
+	int len_without_ext = len;
+	int len_ext			= 0;
 
-	for (i = 0; i < len && name[i] != '.'; i++)
+	if (len > 11) goto longname;	   // 文件名过长使用长文件名
+	if (name[0] == '.') goto longname; // "."开头的文件名也使用长文件名
+
+	for (i = 0; i < len && !(name[i] == '.' && i >= 1); i++)
 		if (islower(name[i])) flag |= 0x1;		// 文件名含小写
 		else if (isupper(name[i])) flag |= 0x2; // 文件名含大写
 	len_without_ext = i;
@@ -227,6 +226,7 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 
 	// 文件名和扩展名混杂大小写或长度过长则作为长目录项
 	if (len > 11 || len_ext > 3 || len_without_ext > 8 || (flag & 0x03) == 0x03 || (flag & 0x0c) == 0x0c) {
+	longname:
 		len2 = DIV_ROUND_UP(len, 13);
 
 		// 计算数字部分长度(十进制)
@@ -237,8 +237,13 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 		}
 
 		name_len = MIN(6, 8 - count - 1);
-		for (i = 0; i < 8; i++) {
-			if (i < name_len) filename_short[i] = toupper(name[i]);
+		if (name[0] == '.') {
+			j = 1;
+		} else {
+			j = 0;
+		}
+		for (i = 0; i < 8; i++, j++) {
+			if (i < name_len) filename_short[i] = toupper(name[j]);
 			else if (i == name_len) filename_short[i] = '~';
 			else if (i > name_len && i < 8)
 				filename_short[i] = ((name_count / (int)pow(10, 7 - i)) % 10 + '0');
@@ -297,7 +302,7 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 			ldir->LDIR_FstClusLO = 0;
 			for (k = (j % 13); k < 13; k++) {
 				if (k < len - (len2 - i - 1) * 13) {
-					ldir->LDIR_Name3[k - 11] = name[j];
+					ldir->LDIR_Name3[k - 11] = name[k];
 					f						 = 1;
 				} else {
 					if (!f) {
@@ -324,7 +329,7 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 		sdir->DIR_Attr = FAT32_ATTR_ARCHIVE;
 
 		sdir->DIR_LastAccDate = sdir->DIR_CrtDate = sdir->DIR_WrtDate =
-			(p->tm_year - 1980) << 9 | p->tm_mon << 5 | p->tm_mday;
+			(p->tm_year - 80) << 9 | p->tm_mon << 5 | p->tm_mday;
 		sdir->DIR_CrtTime = sdir->DIR_WrtTime = p->tm_hour << 11 | p->tm_min << 5 | p->tm_sec >> 1;
 		sdir->DIR_CrtTimeTenth				  = p->tm_sec * 10;
 
@@ -352,7 +357,7 @@ struct fnode *FAT32_create_file(struct ffi *ffi, FILE *fp, struct _partition_s *
 		if (flag & 0x04) sdir->DIR_NTRes |= FAT32_EXT_L;
 
 		sdir->DIR_LastAccDate = sdir->DIR_CrtDate = sdir->DIR_WrtDate =
-			(p->tm_year - 1980) << 9 | p->tm_mon << 5 | p->tm_mday;
+			(p->tm_year - 80) << 9 | p->tm_mon << 5 | p->tm_mday;
 		sdir->DIR_CrtTime = sdir->DIR_WrtTime = p->tm_hour << 11 | p->tm_min << 5 | p->tm_sec >> 1;
 		sdir->DIR_CrtTimeTenth				  = p->tm_sec * 10;
 
@@ -440,7 +445,8 @@ struct fnode *FAT32_mkdir(struct ffi *ffi, FILE *fp, struct _partition_s *part, 
 	ffi->seek(fp, (fat32->data_start + (pos - 2) * fat32->BPB_SecPerClus) * SECTOR_SIZE, SEEK_SET);
 	ffi->write(fp, (uint8_t *)&tmpdir, sizeof(struct FAT32_dir));
 	strncpy((char *)tmpdir.DIR_Name, "..      ", 8);
-	tmpdir.DIR_FstClusHI = tmpdir.DIR_FstClusLO = 0;
+	tmpdir.DIR_FstClusHI = parent->pos >> 16;
+	tmpdir.DIR_FstClusLO = parent->pos & 0xff;
 	ffi->write(fp, (uint8_t *)&tmpdir, sizeof(struct FAT32_dir));
 	free(sdir);
 	return fnode;
@@ -607,7 +613,8 @@ struct fnode *FAT32_open_dir(struct ffi *ffi, FILE *fp, struct _partition_s *par
 		strncpy(name, path, i);
 		name[i] = 0;
 		fnode	= FAT32_find_dir(ffi, fp, part, fnode, name);
-		path += i;
+		if (fnode == NULL) { return NULL; }
+		path += i + 1;
 	}
 	return fnode;
 }
@@ -657,6 +664,7 @@ struct fnode *FAT32_find_dir(struct ffi *ffi, FILE *fp, struct _partition_s *par
 
 				if (j >= len) {
 					flag = 1;
+					sdir = (struct FAT32_dir *)(buf + i);
 					goto cmp_success;
 				}
 
@@ -672,8 +680,6 @@ struct fnode *FAT32_find_dir(struct ffi *ffi, FILE *fp, struct _partition_s *par
 						if (sdir->DIR_Name[x] == name[j]) {
 							j++;
 							continue;
-						} else {
-							goto cmp_fail;
 						}
 					}
 				} else if ((sdir->DIR_Name[x] >= 'A' && sdir->DIR_Name[x] <= 'Z') ||
@@ -771,34 +777,40 @@ void FAT32_set_attr(struct ffi *ffi, FILE *fp, struct _partition_s *part, struct
 }
 
 int fat32_alloc_clus(struct ffi *ffi, FILE *fp, partition_t *part, int last_clus, int first) {
-	int buf[128];
+	int buf[SECTOR_SIZE / 4];
 	int i				   = 3, j;
 	struct pt_fat32 *fat32 = part->private_data;
 	uint32_t offset		   = 0;
-	ffi->seek(fp, fat32->fat_start * SECTOR_SIZE, SEEK_SET);
+	ffi->seek(fp, (fat32->fat_start + (last_clus / (SECTOR_SIZE / 4))) * SECTOR_SIZE, SEEK_SET);
 	ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
-	while (buf[i % 128]) {
-		if (i % 128 == 0) {
-			ffi->seek(fp, SECTOR_SIZE, SEEK_CUR);
+	while (buf[i % (SECTOR_SIZE / 4)]) {
+		i++;
+		if (i % (SECTOR_SIZE / 4) == 0) {
+			ffi->seek(fp, (fat32->fat_start + i / (SECTOR_SIZE / 4)) * SECTOR_SIZE, SEEK_CUR);
 			ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
 		}
-		i++;
 	}
 	for (j = 0; j < fat32->BPB_NumFATs; j++) {
-		offset = fat32->fat_start + j * fat32->BPB_FATSz32 + (i / 128);
+		offset = fat32->fat_start + j * fat32->BPB_FATSz32 + (i / (SECTOR_SIZE / 4));
 		ffi->seek(fp, offset * SECTOR_SIZE, SEEK_SET);
 		ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
-		buf[i % 128] = 0x0ffffff8;
+		buf[i % (SECTOR_SIZE / 4)] = 0x0ffffff8;
 		ffi->seek(fp, offset * SECTOR_SIZE, SEEK_SET);
 		ffi->write(fp, (uint8_t *)buf, SECTOR_SIZE);
 		if (!first) {
-			offset = fat32->fat_start + j * fat32->BPB_FATSz32 + (last_clus / 128);
+			offset = fat32->fat_start + j * fat32->BPB_FATSz32 + (last_clus / (SECTOR_SIZE / 4));
 			ffi->seek(fp, offset * SECTOR_SIZE, SEEK_SET);
 			ffi->read(fp, (uint8_t *)buf, SECTOR_SIZE);
-			buf[last_clus % 128] = i;
+			buf[last_clus % (SECTOR_SIZE / 4)] = i;
 			ffi->seek(fp, offset * SECTOR_SIZE, SEEK_SET);
 			ffi->write(fp, (uint8_t *)buf, SECTOR_SIZE);
 		}
+	}
+
+	memset(buf, 0, SECTOR_SIZE);
+	for (j = 0; j < fat32->BPB_SecPerClus; j++) {
+		ffi->seek(fp, (fat32->data_start + (i - 2) * fat32->BPB_SecPerClus + j) * SECTOR_SIZE, SEEK_SET);
+		ffi->write(fp, (uint8_t *)buf, SECTOR_SIZE);
 	}
 	return i;
 }

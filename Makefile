@@ -4,7 +4,7 @@ RM	=	rm
 .PHONY: clean build
 
 SRC := 
-SRC += imagetool.c fs.c ff.c
+SRC += imagetool.c fs.c ff.c system.c
 SRC += fileformat/raw.c
 SRC += filesystem/fat32.c
 
