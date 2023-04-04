@@ -49,7 +49,7 @@ void copy_dir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *ds
 	do {
 		char *filename = FILE_NAME(ptr);
 		if (strcmp(filename, ".") == 0 || strcmp(filename, "..") == 0) { goto next; }
-		
+
 		int len	 = strlen(filename);
 		int len1 = strlen(src), len2 = strlen(dst);
 
@@ -80,10 +80,10 @@ void copy_dir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *ds
 		free(tmp2);
 	next:
 #ifdef __linux__
-		ptr = readdir(dir);
+		ptr	 = readdir(dir);
 		flag = ptr != NULL;
 #elif _WIN32
 		flag = FindNextFile(handle, &ptr) != 0;
 #endif
-	} while(flag);
+	} while (flag);
 }
