@@ -13,8 +13,11 @@ int main(int argc, char **argv) {
 	if (argc < 2) {
 		exit(-1);
 	} else if (argc < 3) {
-		printf("Need Commmand!\n");
-		exit(-1);
+		if (strcmp(argv[1], "version") == 0) {
+			printf(" \
+Imagetool version %s \n \
+Copyright (C) 2023 Ryan Wang\n", VERSION);
+		}
 	}
 	fp = fopen(argv[1], "rb+");
 	if (fp == NULL) {
