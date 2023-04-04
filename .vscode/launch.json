@@ -12,7 +12,7 @@
             "args": [
                 "test.img",
                 "copydir",
-                "./fs/",
+                "../Horizon-Operating-System/apps/",
                 "/p0/"
             ],
             "stopAtEntry": false,

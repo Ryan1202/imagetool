@@ -21,6 +21,9 @@ int main(int argc, char **argv) {
 		perror("imgtool");
 		exit(-1);
 	}
+#ifdef DEBUG
+	setbuf(fp, NULL); // 禁用缓冲区，调试用
+#endif
 	ffi = ff_init(fp, argv[1]);
 	if (ffi == NULL) {
 		printf("Unknown file format!\n");
@@ -74,7 +77,7 @@ void do_commands(int argc, char **argv, partition_t *pt[4], struct ffi *ffi, FIL
 			printf("Too few arguments!\n");
 			exit(-1);
 		}
-		mkdir(pt, ffi, fp, argv[1], argv[2]);
+		do_mkdir(pt, ffi, fp, argv[1], argv[2]);
 	} else {
 		printf("Command Error!\n");
 	}
@@ -125,7 +128,7 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 			fclose(from);
 			return;
 		}
-		printf("Create file \"%s\".", src);
+		printf("Create file \"%s\".\n", src);
 	}
 
 	int pos = 0;
@@ -140,7 +143,7 @@ void copy_file(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *d
 	fclose(from);
 }
 
-void mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst) {
+void do_mkdir(partition_t *pt[4], struct ffi *ffi, FILE *fp, char *src, char *dst) {
 	int i, len1, len2;
 	char *s;
 	partition_t *part;

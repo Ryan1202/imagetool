@@ -12,7 +12,11 @@ build:
 	$(CC) -o imgtool $(SRC) -lm
 
 dbg:
-	$(CC) -o imgtool $(SRC) -lm -g
+	$(CC) -o imgtool $(SRC) -lm -g -DDEBUG
 
 clean:
+ifeq ($(OS), Windows_NT)
+	$(RM) imgtool.exe
+else
 	$(RM) imgtool
+endif

@@ -9,7 +9,10 @@
         "stdio.h": "c",
         "stdint.h": "c",
         "stdint-gcc.h": "c",
-        "systemspec.h": "c"
+        "systemspec.h": "c",
+        "io.h": "c",
+        "imagetool.h": "c",
+        "system.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled",
     "C_Cpp.clang_format_path": "",
