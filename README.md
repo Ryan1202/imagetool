@@ -7,6 +7,8 @@
 
 ---
 
+注意:写入大于分区剩余空间大小的文件可能会导致分区损坏
+
 ## 格式
 
 ### 命令格式
@@ -32,7 +34,7 @@
         
         示例
 
-            imgtool hd.img copydir folder /p0/
+            imgtool hd.img copydir folder/ /p0/
 
 
 * source: 部分命令使用的源文件路径
