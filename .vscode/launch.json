@@ -1,38 +1,68 @@
 {
-    // 使用 IntelliSense 了解相关属性。 
-    // 悬停以查看现有属性的描述。
-    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "(gdb) 启动",
-            "type": "cppdbg",
+            "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/imgtool",
+            "name": "Debug unit tests in library 'imagetool'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=imagetool"
+                ],
+                "filter": {
+                    "name": "imagetool",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'imagetool'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=imagetool",
+                    "--package=imagetool"
+                ],
+                "filter": {
+                    "name": "imagetool",
+                    "kind": "bin"
+                }
+            },
             "args": [
                 "test.img",
-                "copydir",
-                "../Horizon-Operating-System/apps/",
-                "/p0/"
+                "copy",
+                "-s",
+                ".\\README.md",
+                "-t",
+                "/p0/README.md"
             ],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "setupCommands": [
-                {
-                    "description": "为 gdb 启用整齐打印",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                },
-                {
-                    "description": "将反汇编风格设置为 Intel",
-                    "text": "-gdb-set disassembly-flavor intel",
-                    "ignoreFailures": true
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'imagetool'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=imagetool",
+                    "--package=imagetool"
+                ],
+                "filter": {
+                    "name": "imagetool",
+                    "kind": "bin"
                 }
-            ]
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
         }
-
     ]
 }

@@ -3,3 +3,9 @@ imgtool
 *.exe
 *.img
 *.elf
+/.vscode*
+/.idea
+
+# Added by cargo
+
+/target
