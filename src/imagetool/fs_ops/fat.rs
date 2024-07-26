@@ -325,6 +325,39 @@ impl ShortDir {
             file_size,
         })
     }
+
+    fn to_bytes(&self, first_clus: u32) -> [u8; 32] {
+        let mut buf = [0u8; 32];
+        for (i, &ch) in self.name.base_name.iter().enumerate() {
+            buf[DIR_NAME + i] = ch;
+        }
+        for (i, &ch) in self.name.ext_name.iter().enumerate() {
+            buf[DIR_NAME + 8 + i] = ch;
+        }
+        buf[DIR_ATTR] = self.attr;
+        buf[DIR_NTRES] = self.ntres;
+        buf[DIR_CRT_TIME_TENTH] = self.create_time_tenth;
+        buf[DIR_CRT_TIME + 0] = self.create_time as u8;
+        buf[DIR_CRT_TIME + 1] = (self.create_time >> 8) as u8;
+        buf[DIR_CRT_DATE + 0] = self.create_date as u8;
+        buf[DIR_CRT_DATE + 1] = (self.create_date >> 8) as u8;
+        buf[DIR_LST_ACC_DATE + 0] = self.last_acc_date as u8;
+        buf[DIR_LST_ACC_DATE + 1] = (self.last_acc_date >> 8) as u8;
+        buf[DIR_FST_CLUS_LO + 0] = first_clus as u8;
+        buf[DIR_FST_CLUS_LO + 1] = (first_clus >> 8) as u8;
+        buf[DIR_FST_CLUS_HI + 0] = (first_clus >> 16) as u8;
+        buf[DIR_FST_CLUS_HI + 1] = (first_clus >> 24) as u8;
+        buf[DIR_WRT_TIME + 0] = self.write_time as u8;
+        buf[DIR_WRT_TIME + 1] = (self.write_time >> 8) as u8;
+        buf[DIR_WRT_DATE + 0] = self.write_date as u8;
+        buf[DIR_WRT_DATE + 1] = (self.write_date >> 8) as u8;
+        buf[DIR_FILE_SIZE + 0] = self.file_size as u8;
+        buf[DIR_FILE_SIZE + 1] = (self.file_size >> 8) as u8;
+        buf[DIR_FILE_SIZE + 2] = (self.file_size >> 16) as u8;
+        buf[DIR_FILE_SIZE + 3] = (self.file_size >> 24) as u8;
+
+        buf
+    }
 }
 
 impl Empty for DirInfo {
@@ -424,8 +457,8 @@ impl FileSystem for FatFs {
         Ok(())
     }
 
-    fn open(&mut self, disk: &mut Box<dyn FileHandler>, path: String) -> io::Result<Request> {
-        let dir_idx = self.get_parent_dir(disk, &path, FileType::File)?;
+    fn open(&mut self, disk: &mut Box<dyn FileHandler>, path: String, ftype: FileType) -> io::Result<Request> {
+        let dir_idx = self.get_dir_entry(disk, &path, ftype)?;
         let dir = self.cache.read(dir_idx);
 
         Ok(Request {
@@ -470,8 +503,9 @@ impl FileSystem for FatFs {
         for (start, end) in range {
             let length = end - start;
             disk.seek(start);
-            disk.write(buf)?;
+            disk.write(&mut buf[done..(done+length)])?;
             done += length;
+            req.offset += length;
         }
         Ok(done)
     }
@@ -490,31 +524,43 @@ impl FileSystem for FatFs {
         file_size: u32,
     )
         -> io::Result<Request> {
+        // 转换时间格式
         let cdate = to_fat32_date(create_date);
         let ctime = to_fat32_time(create_time);
         let wdate = to_fat32_date(write_date);
         let wtime = to_fat32_time(write_time);
         let lacc_date = to_fat32_date(last_acc_date);
         let ctime_tenth = to_fat32_time_tenth(create_time);
-        let attribute = if attr & 0b011_011_011 == 0b011_011_011 {
-            ATTR_READ_ONLY
-        } else {
-            0
-        } | match ftype {
-            FileType::File | FileType::Link => ATTR_ARCHIVE,
-            FileType::Dir => ATTR_ARCHIVE | ATTR_DIRECTORY,
+
+        // 转换属性格式
+        let mut attribute = match ftype.clone() {
+            FileType::File | FileType::Link => {ATTR_ARCHIVE},
+            FileType::Dir => {ATTR_ARCHIVE | ATTR_DIRECTORY},
         };
+        if attr & 0b011_011_011 == 0b011_011_011 {
+            attribute |= ATTR_READ_ONLY
+        }
+
+        // 为新目录项分配簇
         let first_clus = self.alloc_clus(disk, 0, true)?;
 
+        // 获取文件名和路径
         let mut path_split: Vec<&str> = path.split('/').collect();
-        let path_split = path_split.join("/");
-        let parent_idx = self.get_parent_dir(disk, &path_split, FileType::Dir)?;
+        let name = path_split.pop().unwrap().to_string();
+        let path_split = if path_split.is_empty() {
+            "/".to_string()
+        } else {
+            path_split.join("/")
+        };
+        // 获取父目录项
+        let parent_idx = self.get_dir_entry(disk, &path_split, FileType::Dir)?;
 
+        // 创建文件(夹)的所有目录项
         let (mut dir, blocks) = self.create_file_block(
             disk,
             parent_idx,
-            path,
-            ftype,
+            &name,
+            ftype.clone(),
             attribute,
             ctime_tenth,
             ctime,
@@ -525,6 +571,8 @@ impl FileSystem for FatFs {
             wdate,
             file_size,
         )?;
+
+        // 写入目录项
         let mut clus;
         let mut num;
         for mut i in blocks {
@@ -533,6 +581,33 @@ impl FileSystem for FatFs {
         }
         dir.clus_list.push(first_clus);
         dir.idx = self.cache.append(&mut dir);
+        if parent_idx != self.root.idx {
+            let mut tmp = self.cache.read(parent_idx);
+            tmp.children.push(dir.idx);
+            self.cache.update(parent_idx, &mut tmp);
+        }
+
+        // 如果是文件夹则要创建'.'和'..'
+        if let FileType::Dir = ftype {
+            // 创建'.'
+            let mut short_dir = ShortDir::new(
+                ShortName { base_name: *b".       ", ext_name: *b"   " },
+                &".".to_string(),
+                ATTR_ARCHIVE | ATTR_DIRECTORY,
+                ctime_tenth,
+                ctime,
+                cdate,
+                lacc_date,
+                first_clus,
+                wtime,
+                wdate,
+                file_size)?;
+            self.write_dir_entry(disk, first_clus, 0, &mut short_dir.to_bytes(first_clus))?;
+            // 创建'..'
+            short_dir.name = ShortName { base_name: *b"..      ", ext_name: *b"   " };
+            self.write_dir_entry(disk, first_clus, 1, &mut short_dir.to_bytes(dir.clus_list[0]))?;
+        }
+
         Ok(Request {
             idx: dir.idx,
             offset: dir.offset as usize,
@@ -671,7 +746,7 @@ impl FatFs {
         let mut i: i32 = -1;
         let mut flag: bool = false;
         let mut result: Option<[u8; 32]> = None;
-        let len = dbg!(name).len();
+        let len = name.len();
         let mut j;
 
         let mut new = DirInfo {
@@ -773,10 +848,14 @@ impl FatFs {
                             flag = false;
                         }
                     } else {
-                        j += 1;
+                        if is_short_name_available_char(name_bytes[j] as char) {
+                            if x != name_bytes[j] {
+                                flag = false;
+                            }
+                        }
                     }
                     if flag {
-                        j += 1;
+                        j+=1;
                         continue;
                     } else {
                         continue 'outer;
@@ -801,19 +880,30 @@ impl FatFs {
                                 flag = false
                             }
                         } else if x == 0x20 {
-                            if x != name_bytes[j] {
+                            if j < name_bytes.len() && x != name_bytes[j] {
                                 flag = false;
+                            }
+                        } else {
+                            if is_short_name_available_char(name_bytes[j] as char) {
+                                if x != name_bytes[j] {
+                                    flag = false;
+                                }
                             }
                         }
                         if flag {
-                            j += 1;
+                            j+=1;
                             continue;
                         } else {
                             continue 'outer;
                         }
                     }
+                } else {
+                    if j < name_bytes.len() {
+                        continue;
+                    }
                 }
                 flag = true;
+                new.name = name.to_string();
                 result = Some(buf);
                 break 'outer;
             }
@@ -821,8 +911,8 @@ impl FatFs {
         if flag == true {
             match result {
                 Some(sdir) => {
-                    let clus = ((dbg!(LittleEndian::read_u16(&sdir[20..22])) as u32) << 16)
-                        | (dbg!(LittleEndian::read_u16(&sdir[26..28])) as u32);
+                    let clus = ((LittleEndian::read_u16(&sdir[20..22]) as u32) << 16)
+                        | (LittleEndian::read_u16(&sdir[26..28]) as u32);
 
                     new.parent = dir.idx;
                     new.offset = i as u32;
@@ -862,19 +952,11 @@ impl FatFs {
             dir.offset as usize % dir_per_clus,
             &mut buf,
         )?;
-        // 文件大小
-        let fsize = u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]) as usize;
-        // 文件的簇总数
-        let clus_len = ceil_div(fsize, self.bytes_per_clus);
 
         // 该文件的要访问的簇的首项
         let left = req.offset / self.bytes_per_clus;
         // 该文件的要访问的簇的末项
-        let right = if clus_len >= left + clus_count {
-            left + clus_count
-        } else {
-            clus_len
-        };
+        let right = left + clus_count;
         let mut offset = req.offset; // 已处理部分在文件内的相对位置
         let mut left_size = size; // 剩余未处理的大小
         let mut updated = false; // 是否更新过
@@ -913,53 +995,45 @@ impl FatFs {
     }
 
     fn check_short_name(&self, name: &String) -> bool {
-        if name.len() > 11 && self.fs_type != FatFsType::FAT32 {
+        let parts: Vec<&str> = name.rsplitn(2, ".").collect();
+        if self.fs_type != FatFsType::FAT32 {
+            return false;
+        }
+        if parts.len() == 2 && (parts[1].len() >= 8 || parts[0].len() >= 3) {
+            return false;
+        } else if parts.len() == 1 && parts[0].len() >= 8 {
             return false;
         }
         let cap = check_fname_caps(name);
         if cap & 0x03 == 0x03 || cap & 0x0c == 0x0c {
             return false;
         }
-        let mut index = 0;
-        let mut flag = true;
-        for ch in name.chars() {
-            if !ch.is_ascii() {
-                return false;
-            } else if ch == '$'
-                || ch == '%'
-                || ch == '\''
-                || ch == '-'
-                || ch == '_'
-                || ch == '@'
-                || ch == '`'
-                || ch == '~'
-                || ch == '!'
-                || ch == '('
-                || ch == ')'
-                || ch == '{'
-                || ch == '}'
-                || ch == '^'
-                || ch == '#'
-                || ch == '&'
-            {
-                return false;
-            }
-            if index >= 11 {
-                return false;
-            }
-            if flag {
-                if ch == '.' {
-                    index = 7;
-                    flag = false;
-                } else if index >= 7 {
+        
+        if parts.len() == 2 {
+            for ch in parts[1].chars() {
+                if !ch.is_ascii() {
+                    return false;
+                } else if !is_short_name_available_char(ch) {
                     return false;
                 }
-            } else {
-                if ch == '.' {
+            }
+            for ch in parts[0].chars() {
+                if !ch.is_ascii() {
+                    return false;
+                } else if !is_short_name_available_char(ch) {
+                    return false;
+                }
+            }
+        } else {
+            for ch in parts[0].chars() {
+                if !ch.is_ascii() {
+                    return false;
+                } else if !is_short_name_available_char(ch) {
                     return false;
                 }
             }
         }
+        
         true
     }
     fn check_long_name(&self, name: &String) -> bool {
@@ -1007,13 +1081,13 @@ impl FatFs {
                 }
             })
             .collect();
-        let _ = name.trim_start();
+        let short_name: String = name.trim_start().chars().filter(|&ch| is_short_name_available_char(ch)).collect();
 
-        let base_r = name.find('.').unwrap_or(name.len()).min(8);
-        let base = &name[..base_r].to_uppercase();
+        let base_r = short_name.find('.').unwrap_or(short_name.len()).min(8);
+        let base = &short_name[..base_r].to_uppercase();
 
-        let ext = if base_r < name.len() {
-            name[base_r + 1..min(base_r + 4, name.len())].to_uppercase()
+        let ext = if base_r < short_name.len() {
+            short_name[base_r..(min(base_r + 3, short_name.len()))].to_uppercase()
         } else {
             String::from("   ")
         };
@@ -1056,7 +1130,7 @@ impl FatFs {
             let mut n: u32 = 1;
             while n <= 999999 {
                 let mut x = n;
-                let mut i = 7;
+                let mut i = min(short_name.len(), 7);
                 // 将x转换成字符串右对齐保存在base_arr中
                 while x != 0 && i > 1 {
                     let c = (x % 10) as u8 + b'0';
@@ -1164,6 +1238,8 @@ impl FatFs {
             // 剩余字符不足13个，无法填满长目录项
             if i % 13 > 0 {
                 buf[dir::LDIR_ORD] = ord;
+                if i < 13 {buf[dir::LDIR_ORD] |= 0x40}
+                buf[dir::LDIR_ATTR] = ATTR_LONG_NAME;
                 buf[dir::LDIR_CHKSUM] = chksum;
                 // 填充剩余字符为0xFFFF
                 let mut j = i % 13;
@@ -1198,35 +1274,7 @@ impl FatFs {
             file_size,
         )?;
 
-        let mut buf = [0u8; 32];
-        for (i, &ch) in short_dir.name.base_name.iter().enumerate() {
-            buf[DIR_NAME + i] = ch;
-        }
-        for (i, &ch) in short_dir.name.ext_name.iter().enumerate() {
-            buf[DIR_NAME + 8 + i] = ch;
-        }
-        buf[DIR_ATTR] = short_dir.attr;
-        buf[DIR_NTRES] = short_dir.ntres;
-        buf[DIR_CRT_TIME_TENTH] = short_dir.create_time_tenth;
-        buf[DIR_CRT_TIME + 0] = short_dir.create_time as u8;
-        buf[DIR_CRT_TIME + 1] = (short_dir.create_time >> 8) as u8;
-        buf[DIR_CRT_DATE + 0] = short_dir.create_date as u8;
-        buf[DIR_CRT_DATE + 1] = (short_dir.create_date >> 8) as u8;
-        buf[DIR_LST_ACC_DATE + 0] = short_dir.last_acc_date as u8;
-        buf[DIR_LST_ACC_DATE + 1] = (short_dir.last_acc_date >> 8) as u8;
-        buf[DIR_FST_CLUS_LO + 0] = first_clus as u8;
-        buf[DIR_FST_CLUS_LO + 1] = (first_clus >> 8) as u8;
-        buf[DIR_FST_CLUS_HI + 0] = (first_clus >> 16) as u8;
-        buf[DIR_FST_CLUS_HI + 1] = (first_clus >> 24) as u8;
-        buf[DIR_WRT_TIME + 0] = short_dir.write_time as u8;
-        buf[DIR_WRT_TIME + 1] = (short_dir.write_time >> 8) as u8;
-        buf[DIR_WRT_DATE + 0] = short_dir.write_date as u8;
-        buf[DIR_WRT_DATE + 1] = (short_dir.write_date >> 8) as u8;
-        buf[DIR_FILE_SIZE + 0] = short_dir.file_size as u8;
-        buf[DIR_FILE_SIZE + 1] = (short_dir.file_size >> 8) as u8;
-        buf[DIR_FILE_SIZE + 2] = (short_dir.file_size >> 16) as u8;
-        buf[DIR_FILE_SIZE + 3] = (short_dir.file_size >> 24) as u8;
-
+        let buf = short_dir.to_bytes(first_clus);
         blocks.push(buf);
         let dir = DirInfo {
             name: name.to_string(),
@@ -1240,26 +1288,34 @@ impl FatFs {
         Ok((dir, blocks))
     }
 
-    fn get_parent_dir(&mut self, disk: &mut Box<dyn FileHandler>, path: &String, file_type: FileType) -> io::Result<(usize)> {
+    fn get_dir_entry(&mut self, disk: &mut Box<dyn FileHandler>, path: &String, file_type: FileType) -> io::Result<usize> {
+        if path == "/" {
+            return Ok(self.root.idx);
+        }
         let mut names: Vec<&str> = path.split('/').collect();
         let mut idx = self.root.idx;
         let mut dir = self.cache.read(idx);
 
         while names[0] == "" {
-            names.pop();
+            names.remove(0);
         }
 
-        for dir_name in names {
+        for (i, &dir_name) in names.iter().enumerate() {
             dbg!(&dir.name, idx, &dir);
             let children = &dir.children;
-            if !children.is_empty() && dir.ftype != file_type {
+            let mut flag = true;
+            if !children.is_empty() {
                 for &index in children {
                     let tmp = self.cache.read(index);
                     if tmp.name == dir_name {
-                        idx = index;
+                        if !(i == names.len() - 1 && tmp.ftype != file_type) {
+                            idx = index;
+                            flag = false;
+                        }
                     }
                 }
-            } else {
+            }
+            if flag {
                 idx = self.search_in_dir(disk, &mut dir, dir_name)?;
             }
             dir = self.cache.read(idx);
@@ -1384,6 +1440,11 @@ impl FatFs {
         if !is_first_clus {
             self.set_clus(disk, last_clus, i as u32)?;
         }
+        // 将新申请的簇内容清零
+        disk.seek(self.to_byte_cnt(i as u32)?);
+        for _ in 0..self.sec_per_clus {
+            disk.write(&mut [0u8;SECTOR_SIZE])?;
+        }
         Ok(i as u32)
     }
 
@@ -1471,4 +1532,30 @@ fn to_fat32_time(time: &NaiveTime) -> u16 {
 fn to_fat32_time_tenth(time: &NaiveTime) -> u8 {
     let nanos = time.nanosecond();
     (nanos / 100_000_000) as u8
+}
+
+fn is_short_name_available_char(ch: char) -> bool {
+    if ch.is_alphabetic() || ch.is_numeric() {
+        true
+    } else if ch == '$'
+        || ch == '%'
+        || ch == '\''
+        || ch == '-'
+        || ch == '_'
+        || ch == '@'
+        || ch == '`'
+        || ch == '~'
+        || ch == '!'
+        || ch == '('
+        || ch == ')'
+        || ch == '{'
+        || ch == '}'
+        || ch == '^'
+        || ch == '#'
+        || ch == '&'
+    {
+        true
+    } else {
+        false
+    }
 }

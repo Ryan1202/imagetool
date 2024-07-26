@@ -18,7 +18,7 @@ pub struct Request {
 
 pub trait FileSystem {
     fn init(&mut self, disk: &mut Box<dyn FileHandler>, pos: &PtPosition) -> io::Result<()>;
-    fn open(&mut self, disk: &mut Box<dyn FileHandler>, path: String) -> io::Result<Request>;
+    fn open(&mut self, disk: &mut Box<dyn FileHandler>, path: String, ftype: FileType) -> io::Result<Request>;
     fn read(
         &mut self,
         disk: &mut Box<dyn FileHandler>,

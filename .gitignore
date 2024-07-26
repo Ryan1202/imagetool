@@ -3,7 +3,7 @@ imgtool
 *.exe
 *.img
 *.elf
-/.vscode*
+/.vscode
 /.idea
 
 # Added by cargo

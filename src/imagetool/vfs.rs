@@ -126,6 +126,7 @@ impl FileSystem for VfsOps {
         &mut self,
         _disk: &mut Box<dyn FileHandler>,
         _path: String,
+        _ftype: FileType,
     ) -> io::Result<Request> {
         Ok(Request { offset: 0, idx: 0 })
     }

@@ -2,7 +2,7 @@ use chrono::Local;
 use std::{
     fs::{self, File},
     io::{self, Read},
-    os::windows::fs::MetadataExt,
+    os::windows::fs::MetadataExt, path::Path,
 };
 use std::error::Error;
 
@@ -51,6 +51,8 @@ enum Commands {
     },
     /// Copy file from host to image file
     Copy {
+        #[arg(short, long, help = "copy directories recursively")]
+        recursive: bool,
         #[arg(short, long, help = "host file")]
         source: String,
         #[arg(short, long, help = "dest file path with file name")]
@@ -125,7 +127,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|e| {
                 if e.kind() == io::ErrorKind::AlreadyExists {
                     // 如果文件已经存在，忽略错误
-                    println!("File already exists!");
                     File::options()
                         .read(true)
                         .write(true)
@@ -154,8 +155,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Mkdir { dir_path } => {
             create_dir(&mut host_file, &mut root, dir_path)?;
         }
-        Commands::Copy { source, target } => {
-            copy_file(&mut host_file, &mut root, source, target)?;
+        Commands::Copy { source, target, recursive } => {
+            if recursive {
+                copy_dir(&mut host_file, &mut root, source, target)?;
+            } else {
+                copy_file(&mut host_file, &mut root, Path::new(&source), target)?;
+            }
         }
         Commands::Print { target } => {
             print_file(&mut host_file, &mut root, target)?;
@@ -188,7 +193,7 @@ fn delete_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode
     let fs;
     let path;
     (path, fs) = get_fs(&mut root, file_path)?;
-    let mut req = fs.open(&mut host_file, path)?;
+    let mut req = fs.open(&mut host_file, path, FileType::File)?;
     fs.delete_file(&mut host_file, &mut req)?;
     Ok(())
 }
@@ -217,7 +222,7 @@ fn print_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode,
     let fs;
     let path;
     (path, fs) = get_fs(&mut root, target)?;
-    let mut req = fs.open(&mut host_file, path)?;
+    let mut req = fs.open(&mut host_file, path, FileType::File)?;
     println!("\n-----------Start Of File-----------");
     loop {
         let length = fs
@@ -232,24 +237,19 @@ fn print_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode,
     Ok(())
 }
 
-fn copy_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, source: String, target: String) -> Result<(), Box<dyn Error>> {
+fn copy_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, source: &Path, target: String) -> Result<(), Box<dyn Error>> {
     let mut buf = [0u8; BLOCK_SIZE]; // 按8KB分块
     let mut src_file = File::open(source)?;
     let (path, fs) = get_fs(&mut root, target)?;
     let mut copied = 0;
     let file_size = src_file.metadata()?.file_size() as usize;
-    match fs.open(&mut host_file, path.clone()) {
-        Ok(mut req) => {
-            while copied < file_size {
-                src_file.read(&mut buf).unwrap();
-                copied += fs
-                    .write(&mut host_file, &mut req, &mut buf, BLOCK_SIZE)
-                    .unwrap();
-            }
+    let mut req = match fs.open(&mut host_file, path.clone(), FileType::File) {
+        Ok(req) => {
+            req
         }
         Err(_) => {
             let time_now = Local::now();
-            let mut req = fs.create_file(
+            fs.create_file(
                 &mut host_file,
                 &path.to_string(),
                 FileType::File,
@@ -260,13 +260,42 @@ fn copy_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, 
                 &time_now.time(),
                 &time_now.date_naive(),
                 file_size as u32,
-            )?;
-            while copied < file_size {
-                src_file.read(&mut buf).unwrap();
-                copied += fs
-                    .write(&mut host_file, &mut req, &mut buf, BLOCK_SIZE)
-                    .unwrap();
-            }
+            )?
+        }
+    };
+    
+    while (copied + BLOCK_SIZE) < file_size {
+        src_file.read(&mut buf).unwrap();
+        copied += fs
+            .write(&mut host_file, &mut req, &mut buf, BLOCK_SIZE)
+            .unwrap();
+    }
+    // 不足一个块大小的部分
+    src_file.read(&mut buf).unwrap();
+    fs.write(&mut host_file, &mut req, &mut buf, file_size - copied)?;
+    Ok(())
+}
+
+fn copy_dir(mut host_file: &mut Box<dyn FileHandler>, root: &mut FileNode, source: String, target: String) -> Result<(), Box<dyn Error>> {
+    let dir = fs::read_dir(source.clone())?;
+    let source = source.trim_end_matches("/");
+    let target = target.trim_end_matches("/");
+    for x in dir {
+        let entry = x?;
+        let metadata = entry.metadata()?;
+        let path = entry.path();
+        let filename = entry.file_name().into_string().unwrap();
+        let target = target.to_string() + "/" + &filename;
+        if metadata.is_dir() {
+            let (path, fs) = get_fs(root, target.clone())?;
+            match fs.open(&mut host_file, path, FileType::Dir) {
+                Ok(_) => {},
+                Err(_) => {create_dir(host_file, root, target.clone())?},
+            };
+            let src = source.to_string() + "/" + &entry.file_name().into_string().unwrap();
+            copy_dir(host_file, root, src, target.clone())?;
+        } else {
+            copy_file(host_file, root, path.as_path(), target.clone())?;
         }
     }
     Ok(())
