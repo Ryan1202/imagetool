@@ -2,18 +2,17 @@ use chrono::Local;
 use std::{
     fs::{self, File},
     io::{self, Read},
-    os::windows::fs::MetadataExt, path::Path,
+    path::Path, sync::Arc,
 };
 use std::error::Error;
 
 use imagetool::{
     self, host_ops,
     utils::size2bytes,
-    vfs::{get_fs, FileNode, FileType},
+    vfs::{FileNode, VFS},
 };
 
 use clap::{Parser, Subcommand};
-use imagetool::host_ops::FileHandler;
 
 const BLOCK_SIZE: usize = 8192;
 
@@ -114,6 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Delete { .. } => host_ops::FileOpsMode::ReadWrite,
         Commands::Mkdir { .. } => host_ops::FileOpsMode::ReadWrite,
     };
+
     let file = match mode {
         host_ops::FileOpsMode::ReadOnly => options
             .read(true)
@@ -139,94 +139,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
     };
 
-    let mut host_file = host_ops::new(file, mode).unwrap();
+    let host_file = host_ops::new(file, mode).unwrap();
 
-    let mut root = FileNode::new_root(&mut host_file)?;
+    VFS::initialize(host_file)?;
+    let mut vfs = VFS::instance();
+
     match command {
         Commands::New { size } => {
-            host_file.create(size2bytes(&size).unwrap_or(0))?;
+            vfs.as_mut().unwrap().handler.create(size2bytes(&size).unwrap_or(0))?;
         }
         Commands::Create { file_path } => {
-            create_file(&mut host_file, &mut root, file_path)?;
+            create_file(vfs.as_mut().unwrap(), file_path)?;
         }
         Commands::Delete { file_path } => {
-            delete_file(&mut host_file, &mut root, file_path)?;
+            delete_file(vfs.as_mut().unwrap(), file_path)?;
         }
         Commands::Mkdir { dir_path } => {
-            create_dir(&mut host_file, &mut root, dir_path)?;
+            create_dir(vfs.as_mut().unwrap(), dir_path)?;
         }
         Commands::Copy { source, target, recursive } => {
             if recursive {
-                copy_dir(&mut host_file, &mut root, source, target)?;
+                copy_dir(vfs.as_mut().unwrap(), source, target)?;
             } else {
-                copy_file(&mut host_file, &mut root, Path::new(&source), target)?;
+                copy_file(vfs.as_mut().unwrap(), Path::new(&source), target)?;
             }
         }
         Commands::Print { target } => {
-            print_file(&mut host_file, &mut root, target)?;
+            print_file(vfs.as_mut().unwrap(), target)?;
         }
     }
 
     Ok(())
 }
 
-fn create_dir(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, dir_path: String) -> Result<(), Box<dyn Error>> {
-    let fs;
-    let path;
-    (path, fs) = get_fs(&mut root, dir_path)?;
+fn create_dir(vfs: &mut VFS, dir_path: String) -> Result<(), Box<dyn Error>> {
     let time_now = Local::now();
-    fs.create_file(&mut host_file,
-                   &path,
-                   FileType::Dir,
+    vfs.create_file(Path::new(&dir_path),
+                   true,
                    0,
                    &time_now.date_naive(),
                    &time_now.time(),
                    &time_now.date_naive(),
                    &time_now.time(),
                    &time_now.date_naive(),
-                   0,
-    )?;
+                   0)?;
     Ok(())
 }
 
-fn delete_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, file_path: String) -> Result<(), Box<dyn Error>> {
-    let fs;
-    let path;
-    (path, fs) = get_fs(&mut root, file_path)?;
-    let mut req = fs.open(&mut host_file, path, FileType::File)?;
-    fs.delete_file(&mut host_file, &mut req)?;
+fn delete_file(vfs: &mut VFS, file_path: String) -> Result<(), Box<dyn Error>> {
+    vfs.delete_file(Path::new(&file_path))?;
     Ok(())
 }
 
-fn create_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, file_path: String) -> Result<(), Box<dyn Error>> {
-    let fs;
-    let path;
-    (path, fs) = get_fs(&mut root, file_path)?;
+fn create_file(vfs: &mut VFS, file_path: String) -> Result<Arc<FileNode>, Box<dyn Error>> {
     let time_now = Local::now();
-    fs.create_file(&mut host_file,
-                   &path,
-                   FileType::File,
+    let node = vfs.create_file(Path::new(&file_path),
+                   false,
                    0,
                    &time_now.date_naive(),
                    &time_now.time(),
                    &time_now.date_naive(),
                    &time_now.time(),
                    &time_now.date_naive(),
-                   0,
-    )?;
-    Ok(())
+                   0)?;
+    Ok(node)
 }
 
-fn print_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, target: String) -> Result<(), Box<dyn Error>> {
+fn print_file(vfs: &mut VFS, file_path: String) -> Result<(), Box<dyn Error>> {
     let mut buf = [0u8; BLOCK_SIZE]; // 按8KB分块
-    let fs;
-    let path;
-    (path, fs) = get_fs(&mut root, target)?;
-    let mut req = fs.open(&mut host_file, path, FileType::File)?;
+    let node = vfs.open(Path::new(&file_path))?;
     println!("\n-----------Start Of File-----------");
     loop {
-        let length = fs
-            .read(&mut host_file, &mut req, &mut buf, BLOCK_SIZE)
+        let length = node.handler.lock().unwrap()
+            .read(&mut vfs.handler, BLOCK_SIZE, &mut buf)
             .unwrap();
         print!("{0}", String::from_utf8_lossy(&buf));
         if length != 512 {
@@ -237,22 +222,21 @@ fn print_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode,
     Ok(())
 }
 
-fn copy_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, source: &Path, target: String) -> Result<(), Box<dyn Error>> {
+fn copy_file(vfs: &mut VFS, source: &Path, target: String) -> Result<(), Box<dyn Error>> {
     let mut buf = [0u8; BLOCK_SIZE]; // 按8KB分块
     let mut src_file = File::open(source)?;
-    let (path, fs) = get_fs(&mut root, target)?;
+    
     let mut copied = 0;
-    let file_size = src_file.metadata()?.file_size() as usize;
-    let mut req = match fs.open(&mut host_file, path.clone(), FileType::File) {
-        Ok(req) => {
-            req
+    let file_size = src_file.metadata()?.len() as usize;
+    let node = match vfs.open(Path::new(&target)) {
+        Ok(node) => {
+            node
         }
         Err(_) => {
             let time_now = Local::now();
-            fs.create_file(
-                &mut host_file,
-                &path.to_string(),
-                FileType::File,
+            vfs.create_file(
+                Path::new(&target),
+                false,
                 0,
                 &time_now.date_naive(),
                 &time_now.time(),
@@ -266,17 +250,17 @@ fn copy_file(mut host_file: &mut Box<dyn FileHandler>, mut root: &mut FileNode, 
     
     while (copied + BLOCK_SIZE) < file_size {
         src_file.read(&mut buf).unwrap();
-        copied += fs
-            .write(&mut host_file, &mut req, &mut buf, BLOCK_SIZE)
+        copied += node.handler.lock().unwrap()
+            .write(&mut vfs.handler, BLOCK_SIZE, &mut buf)
             .unwrap();
     }
     // 不足一个块大小的部分
     src_file.read(&mut buf).unwrap();
-    fs.write(&mut host_file, &mut req, &mut buf, file_size - copied)?;
+    node.handler.lock().unwrap().write(&mut vfs.handler, file_size - copied, &mut buf)?;
     Ok(())
 }
 
-fn copy_dir(mut host_file: &mut Box<dyn FileHandler>, root: &mut FileNode, source: String, target: String) -> Result<(), Box<dyn Error>> {
+fn copy_dir(vfs: &mut VFS, source: String, target: String) -> Result<(), Box<dyn Error>> {
     let dir = fs::read_dir(source.clone())?;
     let source = source.trim_end_matches("/");
     let target = target.trim_end_matches("/");
@@ -287,15 +271,14 @@ fn copy_dir(mut host_file: &mut Box<dyn FileHandler>, root: &mut FileNode, sourc
         let filename = entry.file_name().into_string().unwrap();
         let target = target.to_string() + "/" + &filename;
         if metadata.is_dir() {
-            let (path, fs) = get_fs(root, target.clone())?;
-            match fs.open(&mut host_file, path, FileType::Dir) {
+            match vfs.open(Path::new(&target)) {
                 Ok(_) => {},
-                Err(_) => {create_dir(host_file, root, target.clone())?},
+                Err(_) => {create_dir(vfs, target.clone())?},
             };
             let src = source.to_string() + "/" + &entry.file_name().into_string().unwrap();
-            copy_dir(host_file, root, src, target.clone())?;
+            copy_dir(vfs, src, target.clone())?;
         } else {
-            copy_file(host_file, root, path.as_path(), target.clone())?;
+            copy_file(vfs, path.as_path(), target.clone())?;
         }
     }
     Ok(())

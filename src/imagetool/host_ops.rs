@@ -12,10 +12,10 @@ pub enum FileOpsMode {
     ReadWrite,
 }
 
-pub trait FileHandler {
+pub trait FileHandler: Send + Sync {
     fn is_file_type(&self) -> io::Result<bool>;
     fn create(&mut self, size: u64) -> io::Result<()>;
-    fn seek(&mut self, position: usize);
+    fn seek(&mut self, position: usize) -> io::Result<()>;
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write(&mut self, buf: &mut [u8]) -> io::Result<usize>;
 }

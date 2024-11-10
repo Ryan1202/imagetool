@@ -30,11 +30,11 @@ impl FileHandler for RawType {
     fn is_file_type(&self) -> io::Result<bool> {
         Ok(true)
     }
-    fn seek(&mut self, position: usize) {
+    fn seek(&mut self, position: usize) -> io::Result<()> {
         self.position = position;
         self.file
-            .seek(std::io::SeekFrom::Start(self.position as u64))
-            .unwrap();
+            .seek(std::io::SeekFrom::Start(self.position as u64))?;
+        Ok(())
     }
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.file.read(buf)
