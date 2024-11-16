@@ -18,6 +18,9 @@ pub trait FileHandler: Send + Sync {
     fn seek(&mut self, position: usize) -> io::Result<()>;
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write(&mut self, buf: &mut [u8]) -> io::Result<usize>;
+
+    fn total_size(&self) -> usize;
+    fn chs_info(&self) -> (u16, u8, u8);
 }
 
 pub fn new(file: File, mode: FileOpsMode) -> io::Result<Box<dyn FileHandler>> {

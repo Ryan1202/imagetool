@@ -1,9 +1,11 @@
-use bincode::deserialize;
+use bincode::{deserialize, serialize};
 use byteorder::{ByteOrder, LittleEndian};
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use std::cmp::min;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Components};
 use std::sync::{Arc, Mutex};
 use std::{io, usize, vec};
@@ -16,9 +18,21 @@ use self::dir::{
 use super::{FileOps, FileSystem};
 use crate::host_ops::FileHandler;
 use crate::utils::{ceil_div, SECTOR_SIZE};
-use crate::vfs::{FileNode, FileType, PtPosition};
+use crate::vfs::{FileNode, FileType};
+use crate::disk::PtPosition;
 
 const ROOT_CLUSTER: u32 = 2;
+
+const BOOT_CODE: [u8; 128] = [
+    0x0e, 0x1f, 0xeb, 0x77, 0x7c, 0xac, 0x22, 0xc0, 0x74, 0x0b, 0x56, 0xb4, 0x0e, 0xbb, 0x07, 0x00,
+    0xcd, 0x10, 0x5e, 0xeb, 0xf0, 0x32, 0xe4, 0xcd, 0x16, 0xcd, 0x19, 0xeb, 0xfe, 0x54, 0x68, 0x69,
+    0x73, 0x20, 0x6e, 0x6f, 0x74, 0x20, 0x61, 0x20, 0x62, 0x6f, 0x6f, 0x74, 0x61, 0x62, 0x6c, 0x65,
+    0x20, 0x64, 0x69, 0x73, 0x6b, 0x2e, 0x20, 0x20, 0x50, 0x6c, 0x65, 0x61, 0x73, 0x65, 0x20, 0x69,
+    0x6e, 0x73, 0x65, 0x72, 0x74, 0x20, 0x61, 0x20, 0x62, 0x6f, 0x6f, 0x74, 0x61, 0x62, 0x6c, 0x65,
+    0x20, 0x66, 0x6c, 0x6f, 0x70, 0x70, 0x79, 0x20, 0x61, 0x6e, 0x64, 0x0d, 0x0a, 0x70, 0x72, 0x65,
+    0x73, 0x73, 0x20, 0x61, 0x6e, 0x79, 0x20, 0x6b, 0x65, 0x79, 0x20, 0x74, 0x6f, 0x20, 0x74, 0x72,
+    0x79, 0x20, 0x61, 0x67, 0x61, 0x69, 0x6e, 0x20, 0x20, 0x2e, 0x2e, 0x2e, 0x20, 0x0d, 0x0a, 0x00,
+];
 
 mod bpb {
     // FAT的引导扇区和BOOT INFO扇区中的部分偏移地址
@@ -198,6 +212,89 @@ impl BPB {
             fil_sys_type: [0u8; 8],
             boot_code: [0u8; 420],
             signature: 0,
+        }
+    }
+
+    fn parse_options(&mut self, options: Vec<String>) {
+        for option in options {
+            let parts: Vec<&str> = option.split('=').collect();
+            if parts.len() == 2 {
+                match parts[0] {
+                    "volume_label" => {
+                        let label = parts[1].as_bytes();
+                        for (i, &byte) in label.iter().enumerate().take(11) {
+                            self.vol_lab[i] = byte;
+                        }
+                    }
+                    "bytes_per_sec" => {
+                        self.bytes_per_sec = parts[1].parse().unwrap_or(SECTOR_SIZE as u16);
+                    }
+                    "sec_per_clus" => {
+                        self.sec_per_clus = parts[1].parse().unwrap_or(1);
+                    }
+                    "rsvd_sec_cnt" => {
+                        self.rsvd_sec_cnt = parts[1].parse().unwrap_or(1);
+                    }
+                    "num_fats" => {
+                        self.num_fats = parts[1].parse().unwrap_or(2);
+                    }
+                    "root_ent_cnt" => {
+                        self.root_ent_cnt = parts[1].parse().unwrap_or(512);
+                    }
+                    "media" => {
+                        self.media = parts[1].parse().unwrap_or(0xf8);
+                    }
+                    "sec_per_trk" => {
+                        self.sec_per_trk = parts[1].parse().unwrap_or(63);
+                    }
+                    "num_heads" => {
+                        self.num_heads = parts[1].parse().unwrap_or(255);
+                    }
+                    "hidd_sec" => {
+                        self.hidd_sec = parts[1].parse().unwrap_or(0);
+                    }
+                    "ext_flags" => {
+                        self.ext_flags = parts[1].parse().unwrap_or(0);
+                    }
+                    "fs_ver" => {
+                        self.fs_ver = parts[1].parse().unwrap_or(0);
+                    }
+                    "root_clus" => {
+                        self.root_clus = parts[1].parse().unwrap_or(2);
+                    }
+                    "fs_info" => {
+                        self.fs_info = parts[1].parse().unwrap_or(1);
+                    }
+                    "bk_boot_sec" => {
+                        self.bk_boot_sec = parts[1].parse().unwrap_or(6);
+                    }
+                    "drv_num" => {
+                        self.drv_num = parts[1].parse().unwrap_or(0x80);
+                    }
+                    "boot_sig" => {
+                        self.boot_sig = parts[1].parse().unwrap_or(0x29);
+                    }
+                    "vol_id" => {
+                        self.vol_id = parts[1]
+                            .parse()
+                            .unwrap_or(chrono::Utc::now().timestamp() as u32);
+                    }
+                    "vol_lab" => {
+                        let label = parts[1].as_bytes();
+                        for (i, &byte) in label.iter().enumerate().take(11) {
+                            self.vol_lab[i] = byte;
+                        }
+                    }
+                    "bootcode_bin" => {
+                        let filename = parts[1];
+                        let mut file = File::open(filename).unwrap();
+                        file.read(&mut self.boot_code).unwrap();
+                    }
+                    _ => {
+                        println!("Unknown option: {}", parts[0]);
+                    }
+                }
+            }
         }
     }
 }
@@ -402,7 +499,7 @@ impl ShortDir {
                 }
             }
             if flag {
-                j+=1;
+                j += 1;
                 continue;
             } else {
                 return false;
@@ -438,7 +535,7 @@ impl ShortDir {
                     }
                 }
                 if flag {
-                    j+=1;
+                    j += 1;
                     continue;
                 } else {
                     return false;
@@ -454,8 +551,11 @@ impl ShortDir {
     }
 }
 
+const MAX_FAT_ENTRY_32: u32 = 0x0ffffff7;
+const MAX_FAT_ENTRY_16: u16 = 0xfff7;
+const MAX_FAT_ENTRY_12: u16 = 0xff7;
 impl FileSystem for FatFs {
-    fn init(&mut self, disk: &mut Box<dyn FileHandler>, pos: &PtPosition) -> io::Result<()> {
+    fn init(&mut self, disk: &mut Box<dyn FileHandler>, pos: &PtPosition) -> io::Result<bool> {
         let mut buf = [0u8; SECTOR_SIZE];
         disk.seek(pos.start as usize * SECTOR_SIZE)?;
         disk.read(&mut buf)?;
@@ -467,6 +567,10 @@ impl FileSystem for FatFs {
             fatsz = bpb.fat_sz16.into();
         } else {
             fatsz = bpb.fat_sz32;
+        }
+        // 无FAT表则视作为未格式化
+        if fatsz == 0 {
+            return Ok(false);
         }
 
         let total_sec: u32;
@@ -507,15 +611,150 @@ impl FileSystem for FatFs {
         self.bytes_per_clus = self.bytes_per_sec * self.sec_per_clus;
         self.bpb = bpb;
 
+        Ok(true)
+    }
+
+    fn format_partition(
+        disk: &mut Box<dyn FileHandler>,
+        pos: &PtPosition,
+        fs_type: &str,
+        options: Vec<String>,
+    ) -> io::Result<()> {
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        let mut bpb = BPB::new_empty();
+        let total_sectors = pos.end - pos.start;
+        let mut fat_type = FatFsType::FAT32;
+
+        bpb.boot_jmp = [0xeb, 0x58, 0x90];
+        bpb.oem_name = *b"imgtool ";
+        bpb.bytes_per_sec = SECTOR_SIZE as u16;
+        bpb.num_fats = 2u8; // 默认2个FAT表
+
+        match fs_type {
+            "fat12" => {
+                fat_type = FatFsType::FAT12;
+                // FAT12中一个簇号占12位(3/2字节)
+                bpb.fat_sz16 = ceil_div(MAX_FAT_ENTRY_12 * 3, 2 * SECTOR_SIZE as u16);
+                bpb.tot_sec16 = total_sectors as u16;
+                bpb.sec_per_clus = ceil_div(bpb.tot_sec16, MAX_FAT_ENTRY_12) as u8;
+                bpb.rsvd_sec_cnt = 1;
+                bpb.root_ent_cnt = 512;
+                bpb.media = 0xf8;
+                bpb.sec_per_trk = 63;
+                bpb.num_heads = 255;
+                bpb.hidd_sec = 0;
+                bpb.tot_sec32 = 0;
+                bpb.fat_sz32 = 0;
+
+                // 初始化FAT表
+                for i in 0..bpb.num_fats as usize {
+                    disk.seek((pos.start as usize + 1 + i * bpb.fat_sz16 as usize) * SECTOR_SIZE)?;
+                    disk.write(&mut [0xf8, 0xff, 0xff, 0xff, 0x0f])?;
+                }
+            }
+            "fat16" => {
+                fat_type = FatFsType::FAT16;
+                bpb.fat_sz16 = ceil_div(total_sectors as u16, MAX_FAT_ENTRY_16);
+                bpb.tot_sec16 = total_sectors as u16;
+                bpb.sec_per_clus = ceil_div(bpb.tot_sec16, MAX_FAT_ENTRY_16) as u8;
+                bpb.rsvd_sec_cnt = 1;
+                bpb.root_ent_cnt = 512;
+                bpb.media = 0xf8;
+                bpb.sec_per_trk = 63;
+                bpb.num_heads = 255;
+                bpb.hidd_sec = 0;
+                bpb.tot_sec32 = 0;
+                bpb.fat_sz32 = 0;
+
+                // 初始化FAT表
+                for i in 0..bpb.num_fats as usize {
+                    disk.seek((pos.start as usize + 1 + i * bpb.fat_sz16 as usize) * SECTOR_SIZE)?;
+                    disk.write(&mut [0xf8, 0xff, 0xff, 0xff, 0xf8, 0xff])?;
+                }
+            }
+            "fat32" => {
+                fat_type = FatFsType::FAT32;
+                bpb.fat_sz16 = 0;
+                bpb.rsvd_sec_cnt = 32;
+                bpb.root_ent_cnt = 0;
+                bpb.tot_sec16 = 0;
+                // 有效值为0xf0,0xf8-0xff，0xf8表示不可移动磁盘
+                bpb.media = 0xf8;
+                bpb.sec_per_trk = 63;
+                bpb.num_heads = 255;
+                bpb.hidd_sec = 0;
+                bpb.tot_sec32 = total_sectors as u32;
+                bpb.sec_per_clus = ceil_div(bpb.tot_sec32, MAX_FAT_ENTRY_32) as u8;
+                bpb.fat_sz32 = ceil_div(total_sectors as u32, MAX_FAT_ENTRY_32);
+                bpb.ext_flags = 0;
+                bpb.fs_ver = 0;
+                // 根目录簇号, 通常为2
+                bpb.root_clus = 2;
+                // FSINFO扇区号，通常为1
+                bpb.fs_info = 1;
+                // 备份引导扇区（0:无，6:在该分区的第6扇区）
+                bpb.bk_boot_sec = 6;
+                // 驱动器为硬盘(0x80：0号硬盘)
+                bpb.drv_num = 0x80;
+                // 使用时间戳作为卷ID
+                bpb.vol_id = chrono::Utc::now().timestamp() as u32;
+                bpb.vol_lab = *b"NO NAME    ";
+                bpb.fil_sys_type = *b"FAT32   ";
+
+                let mut fs_info = [0u8; 512];
+                LittleEndian::write_u32(&mut fs_info[0..4], 0x41615252);
+                LittleEndian::write_u32(&mut fs_info[484..488], 0x61317272);
+                LittleEndian::write_u32(&mut fs_info[488..492], 0xffffffff);
+                LittleEndian::write_u32(&mut fs_info[492..496], 0xffffffff);
+                fs_info[510] = 0x55;
+                fs_info[511] = 0xaa;
+                disk.seek((pos.start + 1) as usize * SECTOR_SIZE)?;
+                disk.write(&mut fs_info)?;
+                // 初始化FAT表
+                for i in 0..bpb.num_fats as usize {
+                    disk.seek((pos.start as usize + 1 + i * bpb.fat_sz32 as usize) * SECTOR_SIZE)?;
+                    disk.write(&mut [
+                        0xf8, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0f, 0xf8, 0xff, 0xff, 0x0f,
+                    ])?;
+                }
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Unsupported file system",
+                ));
+            }
+        }
+        for (i, &x) in BOOT_CODE.iter().enumerate() {
+            bpb.boot_code[i] = x;
+        }
+        bpb.parse_options(options);
+
+        buf = serialize(&bpb).unwrap();
+        disk.seek(pos.start as usize * SECTOR_SIZE)?;
+        disk.write(&mut buf)?;
+
+        if fs_type == "fat32" {
+            // 写入引导扇区的备份
+            disk.seek((pos.start + 6) as usize * SECTOR_SIZE)?;
+            disk.write(&mut buf)?;
+        }
+
         Ok(())
     }
 }
 
 impl FileOps for ExtendInfo {
-    fn open(&mut self, disk: &mut Box<dyn FileHandler>, fs_root: Arc<FileNode>, path: Components) -> io::Result<Arc<FileNode>> {        
+    fn open(
+        &mut self,
+        disk: &mut Box<dyn FileHandler>,
+        fs_root: Arc<FileNode>,
+        path: Components,
+    ) -> io::Result<Arc<FileNode>> {
         let mut path = path;
-        
-        let (mut node, mut extend_info) = self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
+
+        let (mut node, mut extend_info) =
+            self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
         for component in path {
             (node, extend_info) = extend_info.open_file_in_directory(disk, node, component)?;
         }
@@ -535,7 +774,7 @@ impl FileOps for ExtendInfo {
         write_time: &NaiveTime,
         last_acc_date: &NaiveDate,
         file_size: u32,
-    ) -> io::Result<Arc<FileNode>> {        
+    ) -> io::Result<Arc<FileNode>> {
         let mut node = fs_root;
         let mut extend_info = self.clone();
 
@@ -545,21 +784,20 @@ impl FileOps for ExtendInfo {
             let next = path.next();
             match component.unwrap() {
                 Component::Normal(name) => {
-                    let name = name.to_str()
-                        .ok_or(
-                        io::Error::new(
-                            io::ErrorKind::Other,
-                            "不支持的文件名：".to_string()
-                                + name.to_str().unwrap()))?;
-                    match extend_info.open_file_in_directory(disk, node.clone(), component.unwrap()) {
+                    let name = name.to_str().ok_or(io::Error::new(
+                        io::ErrorKind::Other,
+                        "不支持的文件名：".to_string() + name.to_str().unwrap(),
+                    ))?;
+                    match extend_info.open_file_in_directory(disk, node.clone(), component.unwrap())
+                    {
                         Ok((new_node, new_extend_info)) => {
                             node = new_node;
                             extend_info = new_extend_info;
-                        },
+                        }
                         Err(err) => {
                             if let io::ErrorKind::NotFound = err.kind() {
-                                let (new_node, new_extend_info) =
-                                    extend_info.create_entry_in_directory(
+                                let (new_node, new_extend_info) = extend_info
+                                    .create_entry_in_directory(
                                         disk,
                                         node.clone(),
                                         &name.to_string(),
@@ -570,15 +808,16 @@ impl FileOps for ExtendInfo {
                                         write_date,
                                         write_time,
                                         last_acc_date,
-                                        file_size)?;
+                                        file_size,
+                                    )?;
                                 node.add_child(new_node.clone());
                                 (node, extend_info) = (new_node, new_extend_info);
                             } else {
                                 return Err(err);
                             }
-                        },
+                        }
                     };
-                },
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -599,14 +838,15 @@ impl FileOps for ExtendInfo {
         path: Components,
     ) -> io::Result<()> {
         let mut path = path;
-        
-        let (mut node, mut extend_info) = self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
+
+        let (mut node, mut extend_info) =
+            self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
         for component in path {
             (node, extend_info) = extend_info.open_file_in_directory(disk, node, component)?;
         }
 
         let fs = extend_info.fs.clone();
-        
+
         let mut buf = [0u8; 32];
         // 读取文件对应的表项
         fs.read_dir_entry(
@@ -634,7 +874,7 @@ impl FileOps for ExtendInfo {
         buf: &mut [u8],
     ) -> io::Result<usize> {
         let fs = self.fs.clone();
-        
+
         let range = fs.file_range(disk, self, self.offset as usize, size)?;
         let mut done = 0;
         for (start, end) in range {
@@ -655,15 +895,15 @@ impl FileOps for ExtendInfo {
         disk: &mut Box<dyn FileHandler>,
         size: usize,
         buf: &mut [u8],
-    )-> io::Result<usize> {
+    ) -> io::Result<usize> {
         let fs = self.fs.clone();
-        
+
         let range = fs.file_range(disk, self, self.offset as usize, size)?;
         let mut done = 0;
         for (start, end) in range {
             let length = end - start;
             disk.seek(start)?;
-            disk.write(&mut buf[done..(done+length)])?;
+            disk.write(&mut buf[done..(done + length)])?;
             done += length;
             self.offset += length as u32;
         }
@@ -683,12 +923,10 @@ impl ExtendInfo {
 
         match component {
             Component::Normal(name) => {
-                let name = name.to_str()
-                    .ok_or(
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        "不支持的文件名：".to_string()
-                            + name.to_str().unwrap()))?;
+                let name = name.to_str().ok_or(io::Error::new(
+                    io::ErrorKind::Other,
+                    "不支持的文件名：".to_string() + name.to_str().unwrap(),
+                ))?;
 
                 let new_node = {
                     let children = node.children.lock().unwrap();
@@ -697,23 +935,22 @@ impl ExtendInfo {
                 match new_node {
                     Some(n) => {
                         node = n.clone();
-                    },
+                    }
                     None => {
                         (node, extend_info) = extend_info.search_directory(disk, name)?;
                     }
                 }
-            },
+            }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "无效文件或文件夹名!".to_string()+component.as_os_str().to_str().unwrap(),
+                    "无效文件或文件夹名!".to_string() + component.as_os_str().to_str().unwrap(),
                 ));
             }
         }
-        
+
         Ok((node, extend_info))
     }
-    
 
     fn search_directory(
         &mut self,
@@ -805,18 +1042,25 @@ impl ExtendInfo {
                 Some(sdir) => {
                     let clus = ((LittleEndian::read_u16(&sdir[20..22]) as u32) << 16)
                         | (LittleEndian::read_u16(&sdir[26..28]) as u32);
-                    
+
                     new_info.directory_cluster = self.cluster_list[clus_i];
                     new_info.directory_num = i as u8 % (fs.sec_per_clus as u8 * 16);
                     new_info.offset = i as u32;
                     new_info.cluster_list = fs.get_all_clus(disk, clus)?;
-                    let new_node = FileNode::new(name.to_owned(), FileType::File, Mutex::new(Box::new(new_info.clone())));
+                    let new_node = FileNode::new(
+                        name.to_owned(),
+                        FileType::File,
+                        Mutex::new(Box::new(new_info.clone())),
+                    );
                     return Ok((Arc::new(new_node), new_info));
                 }
-                None => {},
+                None => {}
             }
         }
-        Err(io::Error::new(io::ErrorKind::NotFound, "找不到文件或文件夹：".to_string()+name))
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "找不到文件或文件夹：".to_string() + name,
+        ))
     }
 
     fn create_entry_in_directory(
@@ -844,11 +1088,7 @@ impl ExtendInfo {
         let ctime_tenth = to_fat32_time_tenth(create_time);
 
         // 转换属性格式
-        let mut attribute = ATTR_ARCHIVE | if is_directory {
-            ATTR_DIRECTORY
-        } else {
-            0
-        };
+        let mut attribute = ATTR_ARCHIVE | if is_directory { ATTR_DIRECTORY } else { 0 };
 
         if permission & 0b011_011_011 == 0b011_011_011 {
             attribute |= ATTR_READ_ONLY
@@ -880,12 +1120,18 @@ impl ExtendInfo {
             entry.directory_cluster = clus;
             entry.directory_num = num;
         }
-        
+
         entry.cluster_list.push(first_clus);
-        
-        let new_node = Arc::new(FileNode::new(name.to_owned(),
-            if is_directory {FileType::Directory} else {FileType::File},
-            Mutex::new(Box::new(entry.clone()))));
+
+        let new_node = Arc::new(FileNode::new(
+            name.to_owned(),
+            if is_directory {
+                FileType::Directory
+            } else {
+                FileType::File
+            },
+            Mutex::new(Box::new(entry.clone())),
+        ));
         if self.directory_cluster < 0xfffffff0 {
             parent_node.children.lock().unwrap().push(new_node.clone());
         }
@@ -894,7 +1140,10 @@ impl ExtendInfo {
         if is_directory {
             // 创建'.'
             let mut short_dir = ShortDir::new(
-                ShortName { base_name: *b".       ", ext_name: *b"   " },
+                ShortName {
+                    base_name: *b".       ",
+                    ext_name: *b"   ",
+                },
                 &".".to_string(),
                 ATTR_ARCHIVE | ATTR_DIRECTORY,
                 ctime_tenth,
@@ -904,11 +1153,20 @@ impl ExtendInfo {
                 first_clus,
                 wtime,
                 wdate,
-                file_size)?;
+                file_size,
+            )?;
             fs.write_dir_entry(disk, first_clus, 0, &mut short_dir.to_bytes(first_clus))?;
             // 创建'..'
-            short_dir.name = ShortName { base_name: *b"..      ", ext_name: *b"   " };
-            fs.write_dir_entry(disk, first_clus, 1, &mut short_dir.to_bytes(self.cluster_list[0]))?;
+            short_dir.name = ShortName {
+                base_name: *b"..      ",
+                ext_name: *b"   ",
+            };
+            fs.write_dir_entry(
+                disk,
+                first_clus,
+                1,
+                &mut short_dir.to_bytes(self.cluster_list[0]),
+            )?;
         }
 
         Ok((new_node, entry))
@@ -976,7 +1234,9 @@ impl ExtendInfo {
             // 剩余字符不足13个，无法填满长目录项
             if i % 13 > 0 {
                 buf[dir::LDIR_ORD] = ord;
-                if i < 13 {buf[dir::LDIR_ORD] |= 0x40}
+                if i < 13 {
+                    buf[dir::LDIR_ORD] |= 0x40
+                }
                 buf[dir::LDIR_ATTR] = ATTR_LONG_NAME;
                 buf[dir::LDIR_CHKSUM] = chksum;
                 // 填充剩余字符为0xFFFF
@@ -1044,7 +1304,11 @@ impl ExtendInfo {
                 }
             })
             .collect();
-        let short_name: String = name.trim_start().chars().filter(|&ch| is_short_name_available_char(ch)).collect();
+        let short_name: String = name
+            .trim_start()
+            .chars()
+            .filter(|&ch| is_short_name_available_char(ch))
+            .collect();
 
         let base_r = short_name.find('.').unwrap_or(short_name.len()).min(8);
         let base = &short_name[..base_r].to_uppercase();
@@ -1084,7 +1348,12 @@ impl ExtendInfo {
         });
 
         // 生成数字后缀
-        if !flag && FatFs::check_short_name(&self.fs, &std::str::from_utf8(&short_name).unwrap().to_string()) {
+        if !flag
+            && FatFs::check_short_name(
+                &self.fs,
+                &std::str::from_utf8(&short_name).unwrap().to_string(),
+            )
+        {
             Ok(ShortName {
                 base_name: base_arr,
                 ext_name: ext_arr,
@@ -1137,7 +1406,6 @@ impl ExtendInfo {
             };
         }
     }
-
 }
 
 const DIR_BLOCK_SIZE: usize = 0x20;
@@ -1154,6 +1422,13 @@ const BASE_L: u8 = 0x08;
 const EXT_L: u8 = 0x10;
 
 impl FatFs {
+    pub fn select_mbr_id(fs_type: &str) -> Option<u8> {
+        match fs_type {
+            "fat32" => {Some(0x0c)},
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             fat_size: 0,
@@ -1188,7 +1463,7 @@ impl FatFs {
         // 逐个读取表项，寻找空位
         let mut buf = [0u8; DIR_BLOCK_SIZE];
         let mut num = 0;
-        
+
         let mut clus = parent.cluster_list[0];
         loop {
             self.read_dir_entry(disk, clus, num % 128, &mut buf)?;
@@ -1248,8 +1523,7 @@ impl FatFs {
 
         let end = start + size;
         // 自req.offset开始size大小的数据所在的簇总数
-        let clus_count =
-            ceil_div(end, self.bytes_per_clus) - (start / self.bytes_per_clus);
+        let clus_count = ceil_div(end, self.bytes_per_clus) - (start / self.bytes_per_clus);
 
         let mut buf = [0u8; 0x20];
 
@@ -1266,7 +1540,7 @@ impl FatFs {
         let right = left + clus_count;
         let mut offset = start; // 已处理部分在文件内的相对位置
         let mut left_size = size; // 剩余未处理的大小
-        
+
         for i in left..right {
             // 写入大小超出文件大小
             if i >= extend_info.cluster_list.len() {
@@ -1311,7 +1585,7 @@ impl FatFs {
         if cap & 0x03 == 0x03 || cap & 0x0c == 0x0c {
             return false;
         }
-        
+
         if parts.len() == 2 {
             for ch in parts[1].chars() {
                 if !ch.is_ascii() {
@@ -1336,7 +1610,7 @@ impl FatFs {
                 }
             }
         }
-        
+
         true
     }
     fn check_long_name(&self, name: &String) -> bool {
@@ -1365,7 +1639,6 @@ impl FatFs {
             Ok(FileNameType::ShortName)
         }
     }
-    
 }
 
 impl FatFs {
@@ -1487,7 +1760,7 @@ impl FatFs {
         // 将新申请的簇内容清零
         disk.seek(self.to_byte_cnt(i as u32)?)?;
         for _ in 0..self.sec_per_clus {
-            disk.write(&mut [0u8;SECTOR_SIZE])?;
+            disk.write(&mut [0u8; SECTOR_SIZE])?;
         }
         Ok(i as u32)
     }
