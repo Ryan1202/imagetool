@@ -79,8 +79,8 @@ pub fn to_sectors(
                 "%" => {
                     match start_sector {
                         Some(start_sector) => {
-                            let total_size = total_size.unwrap() - start_sector as usize;
-                            return Some(number * total_size / 100 / SECTOR_SIZE);
+                            let total_size = total_size.unwrap() / SECTOR_SIZE - start_sector;
+                            return Some(start_sector + number * total_size / 100 );
                         },
                         None => {
                             return Some(number * total_size.unwrap() / 100 / SECTOR_SIZE);
