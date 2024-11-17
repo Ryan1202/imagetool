@@ -1,9 +1,9 @@
 use std::ops::{Add, Div, Sub};
 
 pub const KIB: usize = 1024;
-pub const MIB: usize = 1024 * KB;
-pub const GIB: usize = 1024 * MB;
-pub const TIB: usize = 1024 * GB;
+pub const MIB: usize = 1024 * KIB;
+pub const GIB: usize = 1024 * MIB;
+pub const TIB: usize = 1024 * GIB;
 pub const KB: usize = 1000;
 pub const MB: usize = 1000 * KB;
 pub const GB: usize = 1000 * MB;
@@ -17,21 +17,21 @@ pub fn size2bytes(size: &str) -> Option<usize> {
     }
 
     let len = size.len();
-    for i in (1..=2).rev() {
+    for i in (1..=3).rev() {
         if len < i {
             continue;
         }
         let (number_str, unit) = size.split_at(len - i);
         if let Ok(number) = number_str.parse::<usize>() {
             let bytes = match unit.to_lowercase().as_str() {
-                "k" | "kb" => number * KB,
-                "m" | "mb" => number * MB,
-                "g" | "gb" => number * GB,
-                "t" | "tb" => number * TB,
-                "kib" => number * KIB,
-                "mib" => number * MIB,
-                "gib" => number * GIB,
-                "tib" => number * TIB,
+                "kb" => number * KB,
+                "mb" => number * MB,
+                "gb" => number * GB,
+                "tb" => number * TB,
+                "k" | "kib" => number * KIB,
+                "m" | "mib" => number * MIB,
+                "g" | "gib" => number * GIB,
+                "t" | "tib" => number * TIB,
                 _ => continue,
             };
             return Some(bytes);
@@ -58,21 +58,21 @@ pub fn to_sectors(
     }
 
     let len = input.len();
-    for i in (1..=2).rev() {
+    for i in (1..=3).rev() {
         if len < i {
             continue;
         }
         let (number_str, unit) = input.split_at(len - i);
         if let Ok(number) = number_str.parse::<usize>() {
             let sectors = match unit.to_lowercase().as_str() {
-                "k" | "kb" => number * KB / SECTOR_SIZE,
-                "m" | "mb" => number * MB / SECTOR_SIZE,
-                "g" | "gb" => number * GB / SECTOR_SIZE,
-                "t" | "tb" => number * TB / SECTOR_SIZE,
-                "kib" => number * KB / SECTOR_SIZE,
-                "mib" => number * MB / SECTOR_SIZE,
-                "gib" => number * GB / SECTOR_SIZE,
-                "tib" => number * TB / SECTOR_SIZE,
+                "kb" => number * KB / SECTOR_SIZE,
+                "mb" => number * MB / SECTOR_SIZE,
+                "gb" => number * GB / SECTOR_SIZE,
+                "tb" => number * TB / SECTOR_SIZE,
+                "k" | "kib" => number * KIB / SECTOR_SIZE,
+                "m" | "mib" => number * MIB / SECTOR_SIZE,
+                "g" | "gib" => number * GIB / SECTOR_SIZE,
+                "t" | "tib" => number * TIB / SECTOR_SIZE,
                 "s" | "sectors" => {
                     return Some(number);
                 }
