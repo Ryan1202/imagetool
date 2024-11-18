@@ -16,10 +16,10 @@ use self::dir::{
 };
 
 use super::{FileOps, FileSystem};
+use crate::disk::PtPosition;
 use crate::host_ops::FileHandler;
 use crate::utils::{ceil_div, SECTOR_SIZE};
 use crate::vfs::{FileNode, FileType};
-use crate::disk::PtPosition;
 
 const ROOT_CLUSTER: u32 = 2;
 
@@ -648,7 +648,12 @@ impl FileSystem for FatFs {
 
                 // 初始化FAT表
                 for i in 0..bpb.num_fats as usize {
-                    disk.seek((pos.start as usize + 1 + i * bpb.fat_sz16 as usize) * SECTOR_SIZE)?;
+                    disk.seek(
+                        (pos.start as usize
+                            + bpb.rsvd_sec_cnt as usize
+                            + i * bpb.fat_sz16 as usize)
+                            * SECTOR_SIZE,
+                    )?;
                     disk.write(&mut [0xf8, 0xff, 0xff, 0xff, 0x0f])?;
                 }
             }
@@ -668,7 +673,12 @@ impl FileSystem for FatFs {
 
                 // 初始化FAT表
                 for i in 0..bpb.num_fats as usize {
-                    disk.seek((pos.start as usize + 1 + i * bpb.fat_sz16 as usize) * SECTOR_SIZE)?;
+                    disk.seek(
+                        (pos.start as usize
+                            + bpb.rsvd_sec_cnt as usize
+                            + i * bpb.fat_sz16 as usize)
+                            * SECTOR_SIZE,
+                    )?;
                     disk.write(&mut [0xf8, 0xff, 0xff, 0xff, 0xf8, 0xff])?;
                 }
             }
@@ -685,7 +695,10 @@ impl FileSystem for FatFs {
                 bpb.hidd_sec = 0;
                 bpb.tot_sec32 = total_sectors as u32;
                 bpb.sec_per_clus = ceil_div(bpb.tot_sec32, MAX_FAT_ENTRY_32) as u8;
-                bpb.fat_sz32 = ceil_div(total_sectors as u32, MAX_FAT_ENTRY_32);
+                bpb.fat_sz32 = ceil_div(
+                    bpb.tot_sec32,
+                    bpb.sec_per_clus as u32 * (SECTOR_SIZE as u32 / 4),
+                );
                 bpb.ext_flags = 0;
                 bpb.fs_ver = 0;
                 // 根目录簇号, 通常为2
@@ -712,7 +725,12 @@ impl FileSystem for FatFs {
                 disk.write(&mut fs_info)?;
                 // 初始化FAT表
                 for i in 0..bpb.num_fats as usize {
-                    disk.seek((pos.start as usize + 1 + i * bpb.fat_sz32 as usize) * SECTOR_SIZE)?;
+                    disk.seek(
+                        (pos.start as usize
+                            + bpb.rsvd_sec_cnt as usize
+                            + i * bpb.fat_sz32 as usize)
+                            * SECTOR_SIZE,
+                    )?;
                     disk.write(&mut [
                         0xf8, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0f, 0xf8, 0xff, 0xff, 0x0f,
                     ])?;
@@ -1424,7 +1442,7 @@ const EXT_L: u8 = 0x10;
 impl FatFs {
     pub fn select_mbr_id(fs_type: &str) -> Option<u8> {
         match fs_type {
-            "fat32" => {Some(0x0c)},
+            "fat32" => Some(0x0c),
             _ => None,
         }
     }
