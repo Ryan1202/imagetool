@@ -1328,42 +1328,22 @@ impl ExtendInfo {
             .filter(|&ch| is_short_name_available_char(ch))
             .collect();
 
-        let base_r = short_name.find('.').unwrap_or(short_name.len()).min(8);
-        let base = &short_name[..base_r].to_uppercase();
 
-        let ext = if base_r < short_name.len() {
-            short_name[base_r..(min(base_r + 3, short_name.len()))].to_uppercase()
-        } else {
-            String::from("   ")
-        };
+        let base_r = short_name.find('.').unwrap_or(short_name.len());
+        let short_name_bytes = short_name.as_bytes();
 
-        let mut short_name = [' ' as u8; 11];
-
-        base.as_bytes()
-            .iter()
-            .take(8)
-            .enumerate()
-            .for_each(|(i, &b)| {
-                short_name[i] = b;
-            });
-        ext.as_bytes()
-            .iter()
-            .take(3)
-            .enumerate()
-            .for_each(|(i, &b)| {
-                short_name[i + 8] = b;
-            });
-
-        // 把base转换成[u8;8]类型的数组
+        let mut short_name = [b' '; 11];
         let mut base_arr = [b' '; 8];
-        base.chars().enumerate().for_each(|(i, c)| {
-            base_arr[i] = c as u8;
-        });
-        // 把ext转换成[u8;3]类型的数组
         let mut ext_arr = [b' '; 3];
-        ext.chars().enumerate().for_each(|(i, c)| {
-            ext_arr[i] = c as u8;
-        });
+        for i in 0..base_r.max(8) {
+            short_name[i] = short_name_bytes[i].to_ascii_uppercase();
+            base_arr[i] = short_name[i];
+        }
+
+        for i in 0..min(short_name_bytes.len() - base_r, 3) {
+            short_name[i + 8] = short_name_bytes[base_r + 1 + i].to_ascii_uppercase();
+            ext_arr[i] = short_name[i + 8];
+        }
 
         // 生成数字后缀
         if !flag
@@ -1594,9 +1574,9 @@ impl FatFs {
         if self.fs_type != FatFsType::FAT32 {
             return false;
         }
-        if parts.len() == 2 && (parts[1].len() >= 8 || parts[0].len() >= 3) {
+        if parts.len() == 2 && (parts[1].len() > 8 || parts[0].len() > 3) {
             return false;
-        } else if parts.len() == 1 && parts[0].len() >= 8 {
+        } else if parts.len() == 1 && parts[0].len() > 8 {
             return false;
         }
         let cap = check_fname_caps(name);
