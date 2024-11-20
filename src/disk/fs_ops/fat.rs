@@ -3,7 +3,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Components};
@@ -747,6 +747,7 @@ impl FileSystem for FatFs {
             bpb.boot_code[i] = x;
         }
         bpb.parse_options(options);
+        bpb.signature = 0xaa55;
 
         buf = serialize(&bpb).unwrap();
         disk.seek(pos.start as usize * SECTOR_SIZE)?;
@@ -1063,7 +1064,7 @@ impl ExtendInfo {
 
                     new_info.directory_cluster = self.cluster_list[clus_i];
                     new_info.directory_num = i as u8 % (fs.sec_per_clus as u8 * 16);
-                    new_info.offset = i as u32;
+                    new_info.offset = 0;
                     new_info.cluster_list = fs.get_all_clus(disk, clus)?;
                     let new_node = FileNode::new(
                         name.to_owned(),
@@ -1325,7 +1326,7 @@ impl ExtendInfo {
         let short_name: String = name
             .trim_start()
             .chars()
-            .filter(|&ch| is_short_name_available_char(ch))
+            .filter(|&ch| is_short_name_available_char(ch) || ch == '.')
             .collect();
 
 
@@ -1335,7 +1336,7 @@ impl ExtendInfo {
         let mut short_name = [b' '; 11];
         let mut base_arr = [b' '; 8];
         let mut ext_arr = [b' '; 3];
-        for i in 0..base_r.max(8) {
+        for i in 0..min(base_r, 8) {
             short_name[i] = short_name_bytes[i].to_ascii_uppercase();
             base_arr[i] = short_name[i];
         }
@@ -1550,14 +1551,10 @@ impl FatFs {
             // 在簇内的相对位置
             let position = offset % self.bytes_per_clus;
             // 该簇中的在范围内的大小
-            let length = if position == 0 {
-                if position + left_size > self.bytes_per_clus {
-                    self.bytes_per_clus
-                } else {
-                    left_size
-                }
-            } else {
+            let length = if position + left_size > self.bytes_per_clus {
                 self.bytes_per_clus - position
+            } else {
+                left_size
             };
 
             let start = self.to_byte_cnt(clus)? + position;
