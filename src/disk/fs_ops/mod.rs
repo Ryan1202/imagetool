@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::fmt::Debug;
 use std::io;
 use std::path::Components;
@@ -6,9 +7,9 @@ use std::sync::Mutex;
 
 use chrono::{NaiveDate, NaiveTime};
 
+use crate::disk::PtPosition;
 use crate::host_ops::FileHandler;
 use crate::vfs::FileType;
-use crate::disk::PtPosition;
 
 use self::fat::FatFs;
 
@@ -33,7 +34,7 @@ pub trait FileSystem: Send + Sync {
     ) -> io::Result<()>;
 }
 
-pub trait FileOps: Send + Sync + Debug {
+pub trait FileOps: Send + Sync + Debug + Any {
     fn open(
         &mut self,
         disk: &mut Box<dyn FileHandler>,
@@ -74,6 +75,8 @@ pub trait FileOps: Send + Sync + Debug {
         size: usize,
         buf: &mut [u8],
     ) -> io::Result<usize>;
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub fn fs_select_mbr_id(fs_type: &str) -> Option<u8> {

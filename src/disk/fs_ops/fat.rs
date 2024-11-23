@@ -3,7 +3,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Components};
@@ -141,6 +141,8 @@ pub struct FatFs {
     sec_per_clus: usize,
     /// 每扇区字节数
     bytes_per_sec: usize,
+    /// 每簇目录项数
+    dir_per_clus: u16,
 
     fs_type: FatFsType,
     bpb: BPB,
@@ -333,7 +335,10 @@ struct ExtendInfo {
     // 目录项所在的簇号
     directory_cluster: u32,
     // 目录项在簇中的序号
-    directory_num: u8,
+    directory_num: u16,
+
+    // 当前目录下第一个空目录项在簇中的序号
+    last_num: Option<u16>,
 
     offset: u32,
     cluster_list: Vec<u32>,
@@ -609,6 +614,7 @@ impl FileSystem for FatFs {
         self.bytes_per_sec = bpb.bytes_per_sec as usize;
         self.sec_per_clus = bpb.sec_per_clus as usize;
         self.bytes_per_clus = self.bytes_per_sec * self.sec_per_clus;
+        self.dir_per_clus = self.bytes_per_clus as u16 / 32;
         self.bpb = bpb;
 
         Ok(true)
@@ -764,6 +770,10 @@ impl FileSystem for FatFs {
 }
 
 impl FileOps for ExtendInfo {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn open(
         &mut self,
         disk: &mut Box<dyn FileHandler>,
@@ -818,7 +828,6 @@ impl FileOps for ExtendInfo {
                                 let (new_node, new_extend_info) = extend_info
                                     .create_entry_in_directory(
                                         disk,
-                                        node.clone(),
                                         &name.to_string(),
                                         is_directory || next.is_some(),
                                         permission,
@@ -954,9 +963,14 @@ impl ExtendInfo {
                 match new_node {
                     Some(n) => {
                         node = n.clone();
+                        let guard = n.handler.lock().unwrap();
+                        extend_info = guard.as_any().downcast_ref::<ExtendInfo>().unwrap().clone();
                     }
                     None => {
-                        (node, extend_info) = extend_info.search_directory(disk, name)?;
+                        let (new_node, new_extend_info) =
+                            extend_info.search_directory(disk, name)?;
+                        node.add_child(new_node.clone());
+                        (node, extend_info) = (new_node, new_extend_info);
                     }
                 }
             }
@@ -990,18 +1004,36 @@ impl ExtendInfo {
             directory_cluster: clus[clus_i],
             directory_num: 0,
             offset: 0,
+            last_num: None,
             cluster_list: vec![],
         };
 
+        let mut num = 0;
         loop {
             i += 1;
-            if i as usize >= clus.len() * (fs.bytes_per_clus / 0x20) {
+            if i as usize >= clus.len() * fs.dir_per_clus as usize {
                 break;
             }
-            fs.read_dir_entry(disk, clus[clus_i], i as u8, &mut buf)?;
+            clus_i = (i as u16 / fs.dir_per_clus) as usize;
+            num = i as u16 % fs.dir_per_clus;
+            fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
+
+            if clus_i == clus.len() - 1 {
+                match self.last_num {
+                    Some(last_num) => {
+                        if last_num < num {
+                            self.last_num = Some(num + 1);
+                        }
+                    }
+                    None => {
+                        self.last_num = Some(num + 1);
+                    }
+                }
+            }
             if buf[0] == 0xe5 || buf[0] == 0x00 || buf[0] == 0x05 {
                 continue;
             }
+
             let mut ldir: LongDir = deserialize(&buf).unwrap();
 
             let mut fname = String::new();
@@ -1013,15 +1045,13 @@ impl ExtendInfo {
                     prepend_utf16_to_string(&ldir.name1, &mut fname);
 
                     i += 1;
-                    if i as u32 > (fs.bytes_per_clus as u32 / 0x20) {
-                        clus_i += 1;
-                        i = 0;
-                    }
-                    fs.read_dir_entry(disk, clus[clus_i], i as u8, &mut buf)?;
-                    ldir = deserialize(&buf).unwrap();
-                    if ldir.ord & 0x0f == 0x01 || ldir.chksum != chksum {
+                    clus_i = (i as u16 / fs.dir_per_clus) as usize;
+                    num = i as u16 % fs.dir_per_clus;
+                    fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
+                    if ldir.ord & 0x40 == 0x40 || ldir.chksum != chksum {
                         break;
                     }
+                    ldir = deserialize(&buf).unwrap();
                 }
                 if !fname.is_empty() && fname.to_uppercase() == name.to_uppercase() {
                     if ShortName::from_u8_slice(
@@ -1063,7 +1093,7 @@ impl ExtendInfo {
                         | (LittleEndian::read_u16(&sdir[26..28]) as u32);
 
                     new_info.directory_cluster = self.cluster_list[clus_i];
-                    new_info.directory_num = i as u8 % (fs.sec_per_clus as u8 * 16);
+                    new_info.directory_num = num;
                     new_info.offset = 0;
                     new_info.cluster_list = fs.get_all_clus(disk, clus)?;
                     let new_node = FileNode::new(
@@ -1085,7 +1115,6 @@ impl ExtendInfo {
     fn create_entry_in_directory(
         &mut self,
         disk: &mut Box<dyn FileHandler>,
-        parent_node: Arc<FileNode>,
         name: &String,
         is_directory: bool,
         permission: u16,
@@ -1134,7 +1163,7 @@ impl ExtendInfo {
         let mut clus;
         let mut num;
         for mut i in blocks {
-            (clus, num) = fs.new_dir_entry(disk, &self)?;
+            (clus, num) = fs.new_dir_entry(disk, self)?;
             fs.write_dir_entry(disk, clus, num, &mut i)?;
             entry.directory_cluster = clus;
             entry.directory_num = num;
@@ -1151,9 +1180,6 @@ impl ExtendInfo {
             },
             Mutex::new(Box::new(entry.clone())),
         ));
-        if self.directory_cluster < 0xfffffff0 {
-            parent_node.children.lock().unwrap().push(new_node.clone());
-        }
 
         // 如果是文件夹则要创建'.'和'..'
         if is_directory {
@@ -1298,6 +1324,7 @@ impl ExtendInfo {
 
             directory_cluster: 0xffffffff,
             directory_num: 0,
+            last_num: None,
 
             offset: 0,
             cluster_list: vec![],
@@ -1328,7 +1355,6 @@ impl ExtendInfo {
             .chars()
             .filter(|&ch| is_short_name_available_char(ch) || ch == '.')
             .collect();
-
 
         let base_r = short_name.find('.').unwrap_or(short_name.len());
         let short_name_bytes = short_name.as_bytes();
@@ -1439,6 +1465,7 @@ impl FatFs {
             bytes_per_sec: SECTOR_SIZE,
             max_clus: 0,
             bytes_per_clus: 0,
+            dir_per_clus: 0,
             fs_type: FatFsType::FAT32,
             bpb: BPB::new_empty(),
         }
@@ -1449,6 +1476,7 @@ impl FatFs {
             fs,
             directory_cluster: 0xffffffff,
             directory_num: 0,
+            last_num: None,
             offset: 0,
             cluster_list: vec![ROOT_CLUSTER],
         }))
@@ -1457,33 +1485,34 @@ impl FatFs {
     fn new_dir_entry(
         &self,
         disk: &mut Box<dyn FileHandler>,
-        parent: &ExtendInfo,
-    ) -> io::Result<(u32, u8)> {
+        parent: &mut ExtendInfo,
+    ) -> io::Result<(u32, u16)> {
         // 逐个读取表项，寻找空位
         let mut buf = [0u8; DIR_BLOCK_SIZE];
         let mut num = 0;
 
-        let mut clus = parent.cluster_list[0];
-        loop {
-            self.read_dir_entry(disk, clus, num % 128, &mut buf)?;
+        if let Some(last_num) = parent.last_num {
+            if last_num >= self.dir_per_clus {
+                let clus = self.alloc_clus(disk, *parent.cluster_list.last().unwrap(), false)?;
+                parent.cluster_list.push(clus);
+                parent.last_num = Some(1);
+                return Ok((clus, 0));
+            } else {
+                num = last_num;
+            }
+        }
+
+        let mut clus = *parent.cluster_list.last().unwrap();
+        while num < self.dir_per_clus {
+            self.read_dir_entry(disk, clus, num, &mut buf)?;
             if buf[0] == 0 {
                 break;
             }
             num += 1;
-            if num % 128 == 0 {
-                clus = match self.get_next_clus(disk, clus) {
-                    Ok(ret) => {
-                        if ret >= self.max_clus {
-                            self.alloc_clus(disk, clus, false)?
-                        } else {
-                            ret
-                        }
-                    }
-                    Err(ret) => {
-                        return Err(ret);
-                    }
-                }
-            }
+        }
+        if num == self.dir_per_clus {
+            num = 0;
+            clus = self.alloc_clus(disk, clus, false)?;
         }
         Ok((clus, num))
     }
@@ -1492,7 +1521,7 @@ impl FatFs {
         &self,
         disk: &mut Box<dyn FileHandler>,
         clus: u32,
-        num: u8,
+        num: u16,
         buf: &mut [u8; DIR_BLOCK_SIZE],
     ) -> io::Result<usize> {
         let position = self.to_byte_cnt(clus)? + num as usize * DIR_BLOCK_SIZE;
@@ -1503,7 +1532,7 @@ impl FatFs {
         &self,
         disk: &mut Box<dyn FileHandler>,
         clus: u32,
-        num: u8,
+        num: u16,
         buf: &mut [u8; DIR_BLOCK_SIZE],
     ) -> io::Result<usize> {
         let position = self.to_byte_cnt(clus)? + num as usize * DIR_BLOCK_SIZE;

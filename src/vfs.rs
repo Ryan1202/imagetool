@@ -1,13 +1,19 @@
 use std::{
-    fmt::Debug, io, path::{Component, Components, Path}, sync::Arc
+    fmt::Debug,
+    io,
+    path::{Component, Components, Path},
+    sync::Arc,
 };
 
-use crate::{disk::{read_partitions, PartitionError}, fs_ops::FileSystem};
+use crate::{
+    disk::{read_partitions, PartitionError},
+    fs_ops::FileSystem,
+};
 
 use super::{
+    disk::PtPosition,
     fs_ops::{fs_format, FileOps},
     host_ops::FileHandler,
-    disk::PtPosition,
 };
 use chrono::{NaiveDate, NaiveTime};
 use lazy_static::lazy_static;
@@ -80,16 +86,12 @@ impl VFS {
     }
 
     pub fn load_image(&mut self) -> Result<(), PartitionError> {
-
-        let fs_nodes = read_partitions(&mut self.handler)
-            .map_err(|e| {
-                match e {
-                    PartitionError::IoError(string, err) => {
-                        PartitionError::IoError("vfs::load_image->".to_string() + &string, err)
-                    }
-                    _ => unreachable!()
-                }
-            })?;
+        let fs_nodes = read_partitions(&mut self.handler).map_err(|e| match e {
+            PartitionError::IoError(string, err) => {
+                PartitionError::IoError("vfs::load_image->".to_string() + &string, err)
+            }
+            _ => unreachable!(),
+        })?;
 
         for node in fs_nodes {
             self.root.add_child(node);
@@ -397,6 +399,10 @@ impl FileSystem for VfsOps {
 #[derive(Debug, Clone)]
 pub(crate) struct VfsFileOps;
 impl FileOps for VfsFileOps {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn open(
         &mut self,
         _disk: &mut Box<dyn FileHandler>,
