@@ -3,6 +3,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
+use std::any::Any;
 use std::cmp::min;
 use std::fs::File;
 use std::io::Read;
@@ -770,7 +771,10 @@ impl FileSystem for FatFs {
 }
 
 impl FileOps for ExtendInfo {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -782,10 +786,13 @@ impl FileOps for ExtendInfo {
     ) -> io::Result<Arc<FileNode>> {
         let mut path = path;
 
-        let (mut node, mut extend_info) =
-            self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
+        let mut node = self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
         for component in path {
-            (node, extend_info) = extend_info.open_file_in_directory(disk, node, component)?;
+            node = {
+                let mut handler = node.handler.lock().unwrap();
+                let extend_info = handler.as_any_mut().downcast_mut::<ExtendInfo>().unwrap();
+                extend_info.open_file_in_directory(disk, node.clone(), component)?
+            }
         }
         Ok(node)
     }
@@ -793,7 +800,7 @@ impl FileOps for ExtendInfo {
     fn create_file(
         &mut self,
         disk: &mut Box<dyn FileHandler>,
-        fs_root: Arc<FileNode>,
+        parent: Arc<FileNode>,
         path: Components,
         is_directory: bool,
         permission: u16,
@@ -804,59 +811,85 @@ impl FileOps for ExtendInfo {
         last_acc_date: &NaiveDate,
         file_size: u32,
     ) -> io::Result<Arc<FileNode>> {
-        let mut node = fs_root;
-        let mut extend_info = self.clone();
-
         let mut path = path;
-        let mut component = path.next();
-        while component.is_some() {
-            let next = path.next();
-            match component.unwrap() {
-                Component::Normal(name) => {
-                    let name = name.to_str().ok_or(io::Error::new(
-                        io::ErrorKind::Other,
-                        "不支持的文件名：".to_string() + name.to_str().unwrap(),
-                    ))?;
-                    match extend_info.open_file_in_directory(disk, node.clone(), component.unwrap())
-                    {
-                        Ok((new_node, new_extend_info)) => {
-                            node = new_node;
-                            extend_info = new_extend_info;
+        let component = path.next();
+
+        if component.is_none() {
+            return Ok(parent);
+        }
+
+        let next = path.clone().next();
+        match component.unwrap() {
+            Component::Normal(name) => {
+                let name = name.to_str().ok_or(io::Error::new(
+                    io::ErrorKind::Other,
+                    "不支持的文件名：".to_string() + name.to_str().unwrap(),
+                ))?;
+
+                match self.open_file_in_directory(disk, parent.clone(), component.unwrap()) {
+                    Ok(new_node) => {
+                        let mut handler = new_node.handler.lock().unwrap();
+                        let extend_info =
+                            handler.as_any_mut().downcast_mut::<ExtendInfo>().unwrap();
+                        return extend_info.create_file(
+                            disk,
+                            new_node.clone(),
+                            path,
+                            is_directory,
+                            permission,
+                            create_date,
+                            create_time,
+                            write_date,
+                            write_time,
+                            last_acc_date,
+                            file_size,
+                        );
+                    }
+                    Err(err) => {
+                        if let io::ErrorKind::NotFound = err.kind() {
+                            let new_node = self.create_entry_in_directory(
+                                disk,
+                                &name.to_string(),
+                                is_directory || next.is_some(),
+                                permission,
+                                create_date,
+                                create_time,
+                                write_date,
+                                write_time,
+                                last_acc_date,
+                                file_size,
+                            )?;
+                            parent.add_child(new_node.clone());
+                            let mut handler = new_node.handler.lock().unwrap();
+                            let extend_info =
+                                handler.as_any_mut().downcast_mut::<ExtendInfo>().unwrap();
+                            return extend_info.create_file(
+                                disk,
+                                new_node.clone(),
+                                path,
+                                is_directory,
+                                permission,
+                                create_date,
+                                create_time,
+                                write_date,
+                                write_time,
+                                last_acc_date,
+                                file_size,
+                            );
+                        } else {
+                            return Err(err);
                         }
-                        Err(err) => {
-                            if let io::ErrorKind::NotFound = err.kind() {
-                                let (new_node, new_extend_info) = extend_info
-                                    .create_entry_in_directory(
-                                        disk,
-                                        &name.to_string(),
-                                        is_directory || next.is_some(),
-                                        permission,
-                                        create_date,
-                                        create_time,
-                                        write_date,
-                                        write_time,
-                                        last_acc_date,
-                                        file_size,
-                                    )?;
-                                node.add_child(new_node.clone());
-                                (node, extend_info) = (new_node, new_extend_info);
-                            } else {
-                                return Err(err);
-                            }
-                        }
-                    };
-                }
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "无效文件或文件夹名!".to_string()
-                            + component.unwrap().as_os_str().to_str().unwrap(),
-                    ));
+                    }
                 }
             }
-            component = next;
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "无效文件或文件夹名!".to_string()
+                        + component.unwrap().as_os_str().to_str().unwrap(),
+                ));
+            }
         }
-        Ok(node)
     }
 
     fn delete_file(
@@ -867,12 +900,18 @@ impl FileOps for ExtendInfo {
     ) -> io::Result<()> {
         let mut path = path;
 
-        let (mut node, mut extend_info) =
-            self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
+        let mut node = self.open_file_in_directory(disk, fs_root, path.next().unwrap())?;
+
         for component in path {
-            (node, extend_info) = extend_info.open_file_in_directory(disk, node, component)?;
+            node = {
+                let mut handler = node.handler.lock().unwrap();
+                let extend_info = handler.as_any_mut().downcast_mut::<ExtendInfo>().unwrap();
+                extend_info.open_file_in_directory(disk, node.clone(), component)?
+            }
         }
 
+        let handler = node.handler.lock().unwrap();
+        let extend_info = handler.as_any().downcast_ref::<ExtendInfo>().unwrap();
         let fs = extend_info.fs.clone();
 
         let mut buf = [0u8; 32];
@@ -945,9 +984,8 @@ impl ExtendInfo {
         disk: &mut Box<dyn FileHandler>,
         node: Arc<FileNode>,
         component: Component,
-    ) -> io::Result<(Arc<FileNode>, Self)> {
+    ) -> io::Result<Arc<FileNode>> {
         let mut node = node;
-        let mut extend_info = self.clone();
 
         match component {
             Component::Normal(name) => {
@@ -963,14 +1001,11 @@ impl ExtendInfo {
                 match new_node {
                     Some(n) => {
                         node = n.clone();
-                        let guard = n.handler.lock().unwrap();
-                        extend_info = guard.as_any().downcast_ref::<ExtendInfo>().unwrap().clone();
                     }
                     None => {
-                        let (new_node, new_extend_info) =
-                            extend_info.search_directory(disk, name)?;
+                        let new_node = self.search_directory(disk, name)?;
                         node.add_child(new_node.clone());
-                        (node, extend_info) = (new_node, new_extend_info);
+                        node = new_node;
                     }
                 }
             }
@@ -982,14 +1017,14 @@ impl ExtendInfo {
             }
         }
 
-        Ok((node, extend_info))
+        Ok(node)
     }
 
     fn search_directory(
         &mut self,
         disk: &mut Box<dyn FileHandler>,
         name: &str,
-    ) -> io::Result<(Arc<FileNode>, ExtendInfo)> {
+    ) -> io::Result<Arc<FileNode>> {
         let fs = self.fs.clone();
         let mut clus_i = 0;
         let clus = &self.cluster_list;
@@ -1018,6 +1053,9 @@ impl ExtendInfo {
             num = i as u16 % fs.dir_per_clus;
             fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
 
+            if buf[0] == 0xe5 || buf[0] == 0x00 || buf[0] == 0x05 {
+                continue;
+            }
             if clus_i == clus.len() - 1 {
                 match self.last_num {
                     Some(last_num) => {
@@ -1029,9 +1067,6 @@ impl ExtendInfo {
                         self.last_num = Some(num + 1);
                     }
                 }
-            }
-            if buf[0] == 0xe5 || buf[0] == 0x00 || buf[0] == 0x05 {
-                continue;
             }
 
             let mut ldir: LongDir = deserialize(&buf).unwrap();
@@ -1099,9 +1134,9 @@ impl ExtendInfo {
                     let new_node = FileNode::new(
                         name.to_owned(),
                         FileType::File,
-                        Mutex::new(Box::new(new_info.clone())),
+                        Mutex::new(Box::new(new_info)),
                     );
-                    return Ok((Arc::new(new_node), new_info));
+                    return Ok(Arc::new(new_node));
                 }
                 None => {}
             }
@@ -1124,7 +1159,7 @@ impl ExtendInfo {
         write_time: &NaiveTime,
         last_acc_date: &NaiveDate,
         file_size: u32,
-    ) -> io::Result<(Arc<FileNode>, ExtendInfo)> {
+    ) -> io::Result<Arc<FileNode>> {
         let fs = self.fs.clone();
 
         // 转换时间格式
@@ -1214,7 +1249,7 @@ impl ExtendInfo {
             )?;
         }
 
-        Ok((new_node, entry))
+        Ok(new_node)
     }
     /// 创建文件目录项
     /// 备注：该函数仅创建目录项，并未设置directory_cluster和directory_num
@@ -1511,9 +1546,11 @@ impl FatFs {
             num += 1;
         }
         if num == self.dir_per_clus {
-            num = 0;
             clus = self.alloc_clus(disk, clus, false)?;
+            parent.cluster_list.push(clus);
+            num = 0;
         }
+        parent.last_num = Some(num + 1);
         Ok((clus, num))
     }
 

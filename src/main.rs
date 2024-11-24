@@ -11,15 +11,15 @@ use std::{
 
 use imagetool::{
     self,
-    mbr::{MbrPartitionType, create_mbr_partition},
     host_ops::{self, FileHandler},
+    mbr::{create_mbr_partition, MbrPartitionType},
     utils::size2bytes,
     vfs::{FileNode, VFS},
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-const BLOCK_SIZE: usize = 8192;
+const BLOCK_SIZE: usize = 16 * 1024;
 
 #[derive(Debug)]
 enum MyError {
@@ -116,9 +116,9 @@ enum CmdPartitionType {
 impl From<CmdPartitionType> for PartitionTableType {
     fn from(cmd_type: CmdPartitionType) -> Self {
         match cmd_type {
-            CmdPartitionType::Primary |
-            CmdPartitionType::Extended |
-            CmdPartitionType::Logical => PartitionTableType::MBR,
+            CmdPartitionType::Primary | CmdPartitionType::Extended | CmdPartitionType::Logical => {
+                PartitionTableType::MBR
+            }
             CmdPartitionType::GPT => PartitionTableType::GPT,
         }
     }
@@ -227,9 +227,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             partition_type,
             start,
             end,
-            bootloader: bootloader_path
+            bootloader: bootloader_path,
         } => {
-            partition(&mut vfs.as_mut().unwrap().handler, partition_type, fs_type, start, end, bootloader_path)?;
+            partition(
+                &mut vfs.as_mut().unwrap().handler,
+                partition_type,
+                fs_type,
+                start,
+                end,
+                bootloader_path,
+            )?;
         }
     }
 
@@ -294,11 +301,12 @@ fn print_file(vfs: &mut VFS, file_path: String) -> Result<(), Box<dyn Error>> {
 }
 
 fn copy_file(vfs: &mut VFS, source: &Path, target: String) -> Result<(), Box<dyn Error>> {
-    let mut buf = [0u8; BLOCK_SIZE]; // 按8KB分块
     let mut src_file = File::open(source)?;
+    let mut buf = [0u8; BLOCK_SIZE]; // 分块
 
     let mut copied = 0;
     let file_size = src_file.metadata()?.len() as usize;
+    println!("copying {}", source.display());
     let node = match vfs.open(Path::new(&target)) {
         Ok(node) => node,
         Err(_) => {
@@ -317,21 +325,17 @@ fn copy_file(vfs: &mut VFS, source: &Path, target: String) -> Result<(), Box<dyn
         }
     };
 
+    let mut handler = node.handler.lock().unwrap();
     while (copied + BLOCK_SIZE) < file_size {
         src_file.read(&mut buf).unwrap();
-        copied += node
-            .handler
-            .lock()
-            .unwrap()
+
+        copied += handler
             .write(&mut vfs.handler, BLOCK_SIZE, &mut buf)
             .unwrap();
     }
     // 不足一个块大小的部分
     src_file.read(&mut buf).unwrap();
-    node.handler
-        .lock()
-        .unwrap()
-        .write(&mut vfs.handler, file_size - copied, &mut buf)?;
+    handler.write(&mut vfs.handler, file_size - copied, &mut buf)?;
     Ok(())
 }
 
@@ -381,18 +385,20 @@ fn partition(
     match partition_table_type {
         PartitionTableType::MBR => {
             let mbr_partition_type = partition_type.into();
-            let fs_type = fs_select_mbr_id(&fs_type).ok_or(MyError::OtherError("不支持的文件系统".into()))?;
+            let fs_type =
+                fs_select_mbr_id(&fs_type).ok_or(MyError::OtherError("不支持的文件系统".into()))?;
             return create_mbr_partition(
-                    handler,
-                    mbr_partition_type,
-                    fs_type,
-                    &start,
-                    &end,
-                    bootloader_path)
-                    .map_err(|e| MyError::CreatePartitionError(e));
+                handler,
+                mbr_partition_type,
+                fs_type,
+                &start,
+                &end,
+                bootloader_path,
+            )
+            .map_err(|e| MyError::CreatePartitionError(e));
         }
         PartitionTableType::GPT => {
             return Err(MyError::OtherError("暂不支持GPT分区表".into()));
-        },
+        }
     }
 }

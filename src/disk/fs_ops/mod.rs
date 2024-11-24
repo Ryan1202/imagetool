@@ -77,6 +77,7 @@ pub trait FileOps: Send + Sync + Debug + Any {
     ) -> io::Result<usize>;
 
     fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub fn fs_select_mbr_id(fs_type: &str) -> Option<u8> {
