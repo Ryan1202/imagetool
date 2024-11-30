@@ -967,12 +967,26 @@ impl FileOps for ExtendInfo {
 
         let range = fs.file_range(disk, self, self.offset as usize, size)?;
         let mut done = 0;
+        let mut max = 0;
         for (start, end) in range {
             let length = end - start;
             disk.seek(start)?;
             disk.write(&mut buf[done..(done + length)])?;
             done += length;
             self.offset += length as u32;
+            if end > max {
+                max = end;
+            }
+        }
+        
+        // 更新文件大小
+        let mut buf = [0u8; 32];
+        fs.read_dir_entry(disk, self.directory_cluster, self.directory_num, &mut buf)?;
+        let mut sdir:ShortDir = deserialize(&buf).unwrap();
+        if max > sdir.file_size as usize {
+            sdir.file_size = max as u32;
+            let mut buf = serialize(&sdir).unwrap().as_slice().try_into().unwrap();
+            fs.write_dir_entry(disk, self.directory_cluster, self.directory_num, &mut buf)?;
         }
         Ok(done)
     }
