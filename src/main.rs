@@ -336,6 +336,8 @@ fn copy_file(vfs: &mut VFS, source: &Path, target: String) -> Result<(), Box<dyn
     // 不足一个块大小的部分
     src_file.read(&mut buf).unwrap();
     handler.write(&mut vfs.handler, file_size - copied, &mut buf)?;
+
+    handler.file_set_size(&mut vfs.handler, file_size)?;
     Ok(())
 }
 

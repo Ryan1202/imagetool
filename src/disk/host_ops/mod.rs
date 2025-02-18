@@ -25,7 +25,7 @@ pub trait FileHandler: Send + Sync {
 
 pub fn new(file: File, mode: FileOpsMode) -> io::Result<Box<dyn FileHandler>> {
     let file_types: Vec<Box<dyn FileHandler>> =
-        vec![Box::new(RawType::new(file.try_clone()?, mode))];
+        vec![Box::new(RawType::new(file, mode))];
 
     for file_type in file_types {
         if file_type.is_file_type()? {

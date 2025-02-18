@@ -460,4 +460,11 @@ impl FileOps for VfsFileOps {
     ) -> io::Result<usize> {
         Ok(0)
     }
+	fn file_set_size(
+		&mut self,
+		_disk: &mut Box<dyn FileHandler>,
+		_size: usize,
+	) -> io::Result<()> {
+		Ok(())
+	}
 }

@@ -4,7 +4,7 @@ use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use std::any::Any;
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Components};
@@ -122,7 +122,7 @@ enum FileNameType {
     ShortName,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct FatFs {
     /// FAT表大小
     fat_size: u32,
@@ -141,9 +141,15 @@ pub struct FatFs {
     /// 每簇扇区数
     sector_per_cluster: usize,
     /// 每扇区字节数
-    bytes_per_sec: usize,
+    bytes_per_sector: usize,
     /// 每簇目录项数
     entry_per_cluster: u16,
+
+    fat_cache: Vec<u8>,
+    fat_cache_dirty: bool,
+    fat_cache_start: u32,
+    /// 最后一个有空余的FAT表
+    last_fat: u32,
 
     fs_type: FatFsType,
     bpb: BPB,
@@ -332,7 +338,7 @@ struct LongDir {
 
 #[derive(Debug, Clone)]
 struct ExtendInfo {
-    fs: Arc<FatFs>,
+    fs: Arc<Mutex<FatFs>>,
     // 目录项所在的簇号
     directory_cluster: u32,
     // 目录项在簇中的序号
@@ -568,14 +574,14 @@ impl FileSystem for FatFs {
 
         let bpb: BPB = deserialize(&buf).unwrap();
 
-        let fatsz: u32;
+        let fat_size: u32;
         if bpb.fat_size_16 != 0 {
-            fatsz = bpb.fat_size_16.into();
+            fat_size = bpb.fat_size_16.into();
         } else {
-            fatsz = bpb.fat_size_32;
+            fat_size = bpb.fat_size_32;
         }
         // 无FAT表则视作为未格式化
-        if fatsz == 0 {
+        if fat_size == 0 {
             return Ok(false);
         }
 
@@ -593,7 +599,7 @@ impl FileSystem for FatFs {
                 / bpb.bytes_per_sec as u32
         };
         let fat_start: u32 = pos.start as u32 + bpb.reserved_sector_count as u32 + root_dir_sectors;
-        let data_start: u32 = (bpb.num_fats as u32 * fatsz) + fat_start;
+        let data_start: u32 = (bpb.num_fats as u32 * fat_size) + fat_start;
         let data_sec = total_sec - data_start;
 
         let count_of_clusters = data_sec / bpb.sector_per_cluster as u32;
@@ -605,18 +611,30 @@ impl FileSystem for FatFs {
             FatFsType::FAT32
         };
 
-        self.fat_size = fatsz;
+        self.fat_size = fat_size;
         self.total_sector = total_sec;
         self.data_sector = data_sec;
         self.fat_start = fat_start;
         self.data_start = data_start;
         self.fs_type = fs_type;
         self.max_cluster = count_of_clusters + 1;
-        self.bytes_per_sec = bpb.bytes_per_sec as usize;
+        self.bytes_per_sector = bpb.bytes_per_sec as usize;
         self.sector_per_cluster = bpb.sector_per_cluster as usize;
-        self.bytes_per_cluster = self.bytes_per_sec * self.sector_per_cluster;
+        self.bytes_per_cluster = self.bytes_per_sector * self.sector_per_cluster;
         self.entry_per_cluster = self.bytes_per_cluster as u16 / 32;
         self.bpb = bpb;
+        self.fat_cache = vec![0u8; self.bytes_per_sector as usize];
+
+        disk.seek((self.fat_start as usize) * SECTOR_SIZE)?;
+        disk.read(&mut self.fat_cache)?;
+
+        let mut last_fat = 0;
+        let mut buf = self.fat_cache.clone();
+        while (buf[128] != 0) {
+            disk.read(&mut buf)?;
+            last_fat += 1;
+        }
+        self.last_fat = last_fat;
 
         Ok(true)
     }
@@ -815,6 +833,9 @@ impl FileOps for ExtendInfo {
         let component = path.next();
 
         if component.is_none() {
+            let mut fs_guard = self.fs.lock().unwrap();
+            let start = fs_guard.fat_cache_start;
+            fs_guard.flush_fat_cache(disk, start)?;
             return Ok(parent);
         }
 
@@ -915,22 +936,28 @@ impl FileOps for ExtendInfo {
         let fs = extend_info.fs.clone();
 
         let mut buf = [0u8; 32];
-        // 读取文件对应的表项
-        fs.read_dir_entry(
-            disk,
-            extend_info.directory_cluster,
-            extend_info.directory_num,
-            &mut buf,
-        )?;
-        // 标记为已删除
-        buf[0] = 0xe5;
-        // 写入
-        fs.write_dir_entry(
-            disk,
-            extend_info.directory_cluster,
-            extend_info.directory_num,
-            &mut buf,
-        )?;
+        {
+            let fs_guard = fs.lock().unwrap();
+            // 读取文件对应的表项
+            fs_guard.read_dir_entry(
+                disk,
+                extend_info.directory_cluster,
+                extend_info.directory_num,
+                &mut buf,
+            )?;
+            // 标记为已删除
+            buf[0] = 0xe5;
+            // 写入
+            fs_guard.write_dir_entry(
+                disk,
+                extend_info.directory_cluster,
+                extend_info.directory_num,
+                &mut buf,
+            )?;
+        }
+        let mut fs_guard = self.fs.lock().unwrap();
+        let start = fs_guard.fat_cache_start;
+        fs_guard.flush_fat_cache(disk, start)?;
         Ok(())
     }
 
@@ -940,9 +967,12 @@ impl FileOps for ExtendInfo {
         size: usize,
         buf: &mut [u8],
     ) -> io::Result<usize> {
-        let fs = self.fs.clone();
+        let range = {
+            let fs = self.fs.clone();
+            let mut fs_guard = fs.lock().unwrap();
 
-        let range = fs.file_range(disk, self, self.offset as usize, size)?;
+            fs_guard.file_range(disk, self, self.offset as usize, size)?
+        };
         let mut done = 0;
         for (start, end) in range {
             let length = end - start;
@@ -954,6 +984,9 @@ impl FileOps for ExtendInfo {
             done += length;
         }
         self.offset += done as u32;
+        let mut fs_guard = self.fs.lock().unwrap();
+        let start = fs_guard.fat_cache_start;
+        fs_guard.flush_fat_cache(disk, start)?;
         Ok(done)
     }
 
@@ -964,31 +997,38 @@ impl FileOps for ExtendInfo {
         buf: &mut [u8],
     ) -> io::Result<usize> {
         let fs = self.fs.clone();
+        let mut fs_guard = fs.lock().unwrap();
 
-        let range = fs.file_range(disk, self, self.offset as usize, size)?;
+        let range = fs_guard.file_range(disk, self, self.offset as usize, size)?;
         let mut done = 0;
-        let mut max = 0;
         for (start, end) in range {
             let length = end - start;
             disk.seek(start)?;
             disk.write(&mut buf[done..(done + length)])?;
             done += length;
             self.offset += length as u32;
-            if end > max {
-                max = end;
-            }
         }
         
-        // 更新文件大小
-        let mut buf = [0u8; 32];
-        fs.read_dir_entry(disk, self.directory_cluster, self.directory_num, &mut buf)?;
-        let mut sdir:ShortDir = deserialize(&buf).unwrap();
-        if max > sdir.file_size as usize {
-            sdir.file_size = max as u32;
-            let mut buf = serialize(&sdir).unwrap().as_slice().try_into().unwrap();
-            fs.write_dir_entry(disk, self.directory_cluster, self.directory_num, &mut buf)?;
-        }
         Ok(done)
+    }
+
+    fn file_set_size(
+        &mut self,
+        disk: &mut Box<dyn FileHandler>,
+        size: usize,
+    ) -> io::Result<()> {
+        let mut buf = [0u8; 32];
+        let mut fs_guard = self.fs.lock().unwrap();
+        fs_guard.read_dir_entry(disk, self.directory_cluster, self.directory_num, &mut buf)?;
+        
+        let mut sdir:ShortDir = deserialize(&buf).unwrap();
+        sdir.file_size = size as u32;
+        let mut buf = serialize(&sdir).unwrap().as_slice().try_into().unwrap();
+        
+        fs_guard.write_dir_entry(disk, self.directory_cluster, self.directory_num, &mut buf)?;
+        let start = fs_guard.fat_cache_start;
+        fs_guard.flush_fat_cache(disk, start)?;
+        Ok(())
     }
 }
 
@@ -1057,15 +1097,16 @@ impl ExtendInfo {
             cluster_list: vec![],
         };
 
+        let fs_guard = fs.lock().unwrap();
         let mut num = 0;
         loop {
             i += 1;
-            if i as usize >= clus.len() * fs.entry_per_cluster as usize {
+            if i as usize >= clus.len() * fs_guard.entry_per_cluster as usize {
                 break;
             }
-            clus_i = (i as u16 / fs.entry_per_cluster) as usize;
-            num = i as u16 % fs.entry_per_cluster;
-            fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
+            clus_i = (i as u16 / fs_guard.entry_per_cluster) as usize;
+            num = i as u16 % fs_guard.entry_per_cluster;
+            fs_guard.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
 
             if buf[0] == 0xe5 || buf[0] == 0x00 || buf[0] == 0x05 {
                 continue;
@@ -1086,7 +1127,7 @@ impl ExtendInfo {
             let mut ldir: LongDir = deserialize(&buf).unwrap();
 
             let mut fname = String::new();
-            if let FatFsType::FAT32 = fs.fs_type {
+            if let FatFsType::FAT32 = fs_guard.fs_type {
                 let chksum = ldir.chksum;
                 while ldir.attr == ATTR_LONG_NAME && ldir.ord != 0xe5 {
                     prepend_utf16_to_string(&ldir.name3, &mut fname);
@@ -1094,9 +1135,9 @@ impl ExtendInfo {
                     prepend_utf16_to_string(&ldir.name1, &mut fname);
 
                     i += 1;
-                    clus_i = (i as u16 / fs.entry_per_cluster) as usize;
-                    num = i as u16 % fs.entry_per_cluster;
-                    fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
+                    clus_i = (i as u16 / fs_guard.entry_per_cluster) as usize;
+                    num = i as u16 % fs_guard.entry_per_cluster;
+                    fs_guard.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
                     if ldir.ord & 0x40 == 0x40 || ldir.chksum != chksum {
                         break;
                     }
@@ -1144,7 +1185,7 @@ impl ExtendInfo {
                     new_info.directory_cluster = self.cluster_list[clus_i];
                     new_info.directory_num = num;
                     new_info.offset = 0;
-                    new_info.cluster_list = fs.get_all_clus(disk, clus)?;
+                    new_info.cluster_list = fs_guard.get_all_clus(disk, clus)?;
                     let new_node = FileNode::new(
                         name.to_owned(),
                         FileType::File,
@@ -1191,9 +1232,11 @@ impl ExtendInfo {
             attribute |= ATTR_READ_ONLY
         }
 
-        // 为新目录项分配簇
-        let first_clus = fs.alloc_clus(disk, 0, true)?;
-
+        let first_clus = {
+            let mut fs_guard = fs.lock().unwrap();
+            // 为新目录项分配簇
+            fs_guard.alloc_clus(disk, 0, true)?
+        };
         let (mut entry, blocks) = self.create_entry_block(
             disk,
             &name,
@@ -1211,9 +1254,10 @@ impl ExtendInfo {
         // 写入目录项
         let mut clus;
         let mut num;
+        let mut fs_guard = fs.lock().unwrap();
         for mut i in blocks {
-            (clus, num) = fs.new_dir_entry(disk, self)?;
-            fs.write_dir_entry(disk, clus, num, &mut i)?;
+            (clus, num) = fs_guard.new_dir_entry(disk, self)?;
+            fs_guard.write_dir_entry(disk, clus, num, &mut i)?;
             entry.directory_cluster = clus;
             entry.directory_num = num;
         }
@@ -1249,13 +1293,13 @@ impl ExtendInfo {
                 wdate,
                 file_size,
             )?;
-            fs.write_dir_entry(disk, first_clus, 0, &mut short_dir.to_bytes(first_clus))?;
+            fs_guard.write_dir_entry(disk, first_clus, 0, &mut short_dir.to_bytes(first_clus))?;
             // 创建'..'
             short_dir.name = ShortName {
                 base_name: *b"..      ",
                 ext_name: *b"   ",
             };
-            fs.write_dir_entry(
+            fs_guard.write_dir_entry(
                 disk,
                 first_clus,
                 1,
@@ -1282,11 +1326,11 @@ impl ExtendInfo {
         file_size: u32,
     ) -> io::Result<(ExtendInfo, Vec<[u8; 32]>)> {
         let fs = self.fs.clone();
-        let name_type = fs.check_name(name)?;
+        let name_type = fs.lock().unwrap().check_name(name)?;
         let mut blocks: Vec<[u8; 32]> = Vec::new();
         let short_name = match name_type {
             FileNameType::LongName => self.long_name2short_name(disk, name)?,
-            FileNameType::ShortName => ShortName::new(name, &fs)?,
+            FileNameType::ShortName => ShortName::new(name, &fs.lock().unwrap())?,
         };
 
         if let FileNameType::LongName = name_type {
@@ -1423,8 +1467,7 @@ impl ExtendInfo {
 
         // 生成数字后缀
         if !flag
-            && FatFs::check_short_name(
-                &self.fs,
+            && self.fs.lock().unwrap().check_short_name(
                 &std::str::from_utf8(&short_name).unwrap().to_string(),
             )
         {
@@ -1511,16 +1554,20 @@ impl FatFs {
             fat_start: 0,
             data_start: 0,
             sector_per_cluster: 0,
-            bytes_per_sec: SECTOR_SIZE,
+            bytes_per_sector: SECTOR_SIZE,
             max_cluster: 0,
             bytes_per_cluster: 0,
             entry_per_cluster: 0,
+            fat_cache: Vec::new(),
+            fat_cache_dirty: false,
+            fat_cache_start: 0,
+            last_fat: 0,
             fs_type: FatFsType::FAT32,
             bpb: BPB::new_empty(),
         }
     }
 
-    pub fn get_root_info(fs: Arc<Self>) -> Mutex<Box<dyn FileOps>> {
+    pub fn get_root_info(fs: Arc<Mutex<Self>>) -> Mutex<Box<dyn FileOps>> {
         Mutex::new(Box::new(ExtendInfo {
             fs,
             directory_cluster: 0xffffffff,
@@ -1532,7 +1579,7 @@ impl FatFs {
     }
 
     fn new_dir_entry(
-        &self,
+        &mut self,
         disk: &mut Box<dyn FileHandler>,
         parent: &mut ExtendInfo,
     ) -> io::Result<(u32, u16)> {
@@ -1592,7 +1639,7 @@ impl FatFs {
     }
 
     fn file_range(
-        &self,
+        &mut self,
         disk: &mut Box<dyn FileHandler>,
         extend_info: &mut ExtendInfo,
         start: usize,
@@ -1728,7 +1775,7 @@ impl FatFs {
     }
 
     fn to_byte_cnt(&self, clus: u32) -> io::Result<usize> {
-        Ok(self.to_sector_cnt(clus)? * self.bytes_per_sec)
+        Ok(self.to_sector_cnt(clus)? * self.bytes_per_sector)
     }
 
     // 获取下一个簇号，如没有则返回Error
@@ -1736,7 +1783,7 @@ impl FatFs {
         match self.fs_type {
             FatFsType::FAT32 => {
                 let mut next = [0u8; 4];
-                disk.seek(self.fat_start as usize * self.bytes_per_sec + clus as usize * 4)?;
+                disk.seek(self.fat_start as usize * self.bytes_per_sector + clus as usize * 4)?;
                 disk.read(&mut next)?;
                 Ok(u32::from_le_bytes(next))
             }
@@ -1747,7 +1794,7 @@ impl FatFs {
         }
     }
 
-    fn set_clus(&self, disk: &mut Box<dyn FileHandler>, clus: u32, value: u32) -> io::Result<()> {
+    fn set_clus(&mut self, disk: &mut Box<dyn FileHandler>, clus: u32, value: u32) -> io::Result<()> {
         let n = match self.fs_type {
             FatFsType::FAT32 => 4,
             FatFsType::FAT16 => 2,
@@ -1760,19 +1807,37 @@ impl FatFs {
         };
         let mut position;
         let fat_cnt;
+
+        if clus / 128 == self.fat_cache_start {
+            let i = clus as usize % 128;
+            match n {
+                4 => {
+                    self.fat_cache[i * 4..(i + 1) * 4].copy_from_slice(&value.to_le_bytes());
+                }
+                2 => {
+                    self.fat_cache[i * 2..(i + 1) * 2].copy_from_slice(&value.to_le_bytes());
+                }
+                _ => {
+                    unreachable!();
+                }
+            }
+            self.fat_cache_dirty = true;
+            return Ok(());
+        }
+
         if self.bpb.extension_flags & (1 << 7) != 0 {
             position = (self.fat_start as usize + (self.bpb.extension_flags & 0x07) as usize)
-                * self.bytes_per_sec
+                * self.bytes_per_sector
                 + clus as usize * n;
             fat_cnt = 1;
         } else {
-            position = self.fat_start as usize * self.bytes_per_sec + clus as usize * n;
+            position = self.fat_start as usize * self.bytes_per_sector + clus as usize * n;
             fat_cnt = self.bpb.num_fats;
         }
         for _ in 0..fat_cnt {
             disk.seek(position)?;
             disk.write(&mut value.to_le_bytes())?;
-            position += self.fat_size as usize * self.bytes_per_sec;
+            position += self.fat_size as usize * self.bytes_per_sector;
         }
         Ok(())
     }
@@ -1802,14 +1867,12 @@ impl FatFs {
     }
 
     fn alloc_clus(
-        &self,
+        &mut self,
         disk: &mut Box<dyn FileHandler>,
         last_clus: u32,
         is_first_clus: bool,
     ) -> io::Result<u32> {
-        let mut buf = [0u8; 4];
-        let start = self.fat_start as usize * self.bytes_per_sec;
-        let mut i: usize = 3;
+        let mut i = 0;
         let n = match self.fs_type {
             FatFsType::FAT32 => 4,
             FatFsType::FAT16 => 2,
@@ -1821,27 +1884,49 @@ impl FatFs {
             }
         };
 
-        disk.seek(start + i * n)?;
-        disk.read(&mut buf)?;
-        while u32::from_le_bytes(buf) != 0 {
-            i += 1;
-            disk.seek(start + i * n)?;
-            disk.read(&mut buf)?;
+        if self.fat_cache_start == 0 {
+            i = 3 * n;
         }
-        self.set_clus(disk, i as u32, 0xffff_ffff)?;
+        while i < SECTOR_SIZE {
+            let cluster = match n {
+                4 => {u32::from_le_bytes(self.fat_cache[i..i+4].try_into().unwrap()) as usize},
+                2 => {u16::from_le_bytes(self.fat_cache[i..i+2].try_into().unwrap()) as usize},
+                _ => {unreachable!()}
+            };
+            if cluster == 0 {
+                break;
+            }
+            i += n;
+            if i >= SECTOR_SIZE {
+                if self.fat_cache_start + 1 as u32 >= self.fat_size {
+                    self.flush_fat_cache(disk, self.fat_cache_start)?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "No free cluster!",
+                    ));
+                }
+                self.flush_fat_cache(disk, self.fat_cache_start + 1)?;
+                self.last_fat = max(self.last_fat, self.fat_cache_start);
+                i = 0;
+            }
+        }
+        
+        let cluster = (self.fat_cache_start * SECTOR_SIZE as u32 + i as u32) / 4;
+
+        self.set_clus(disk, cluster, 0xffff_ffff)?;
         if !is_first_clus {
-            self.set_clus(disk, last_clus, i as u32)?;
+            self.set_clus(disk, last_clus, cluster)?;
         }
         // 将新申请的簇内容清零
-        disk.seek(self.to_byte_cnt(i as u32)?)?;
-        for _ in 0..self.sector_per_cluster {
-            disk.write(&mut [0u8; SECTOR_SIZE])?;
-        }
-        Ok(i as u32)
+        // disk.seek(self.to_byte_cnt(i as u32)?)?;
+        // for _ in 0..self.sector_per_cluster {
+        //     disk.write(&mut [0u8; SECTOR_SIZE])?;
+        // }
+        Ok(cluster as u32)
     }
 
     fn free_clus(
-        &self,
+        &mut self,
         disk: &mut Box<dyn FileHandler>,
         last_clus: u32,
         clus: u32,
@@ -1859,6 +1944,29 @@ impl FatFs {
                 io::ErrorKind::InvalidInput,
                 "Cannot free root clus!",
             ));
+        }
+        Ok(())
+    }
+
+    fn flush_fat_cache(&mut self, disk: &mut Box<dyn FileHandler>, new_start: u32) -> io::Result<()> {
+        if self.fat_cache_dirty {
+            let mut position = (self.fat_start + self.fat_cache_start) as usize * SECTOR_SIZE;
+            for _ in 0..self.bpb.num_fats {
+                disk.seek(position)?;
+                disk.write(&mut self.fat_cache)?;
+                position += self.fat_size as usize * SECTOR_SIZE;
+            }
+            self.fat_cache_dirty = false;
+        }
+        if self.fat_cache_start != new_start {
+            self.fat_cache_start = new_start;
+            self.fat_cache_dirty = false;
+            let mut position = (self.fat_start + new_start) as usize * SECTOR_SIZE;
+            for _ in 0..self.bpb.num_fats {
+                disk.seek(position)?;
+                disk.read(&mut self.fat_cache)?;
+                position += self.fat_size as usize * SECTOR_SIZE;
+            }
         }
         Ok(())
     }

@@ -76,6 +76,12 @@ pub trait FileOps: Send + Sync + Debug + Any {
         buf: &mut [u8],
     ) -> io::Result<usize>;
 
+    fn file_set_size(
+        &mut self,
+        disk: &mut Box<dyn FileHandler>,
+        size: usize,
+    ) -> io::Result<()>;
+
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -99,7 +105,7 @@ pub fn mbr_fs_init(
         0x01 | 0x04 | 0x06 | 0x0b | 0x0c | 0x0e => {
             let mut fatfs = FatFs::new();
             result = fatfs.init(disk, pos)?;
-            root_info = FatFs::get_root_info(Arc::new(fatfs));
+            root_info = FatFs::get_root_info(Arc::new(Mutex::new(fatfs)));
         }
         _ => {
             return Ok(None);
