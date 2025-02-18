@@ -630,7 +630,7 @@ impl FileSystem for FatFs {
 
         let mut last_fat = 0;
         let mut buf = self.fat_cache.clone();
-        while (buf[128] != 0) {
+        while buf[128] != 0 {
             disk.read(&mut buf)?;
             last_fat += 1;
         }

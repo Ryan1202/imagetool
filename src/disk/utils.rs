@@ -3,11 +3,11 @@ use std::ops::{Add, Div, Sub};
 pub const KIB: usize = 1024;
 pub const MIB: usize = 1024 * KIB;
 pub const GIB: usize = 1024 * MIB;
-pub const TIB: usize = 1024 * GIB;
+// pub const TIB: usize = 1024 * GIB;
 pub const KB: usize = 1000;
 pub const MB: usize = 1000 * KB;
 pub const GB: usize = 1000 * MB;
-pub const TB: usize = 1000 * GB;
+// pub const TB: usize = 1000 * GB;
 
 pub const SECTOR_SIZE: usize = 512;
 
@@ -27,11 +27,11 @@ pub fn size2bytes(size: &str) -> Option<usize> {
                 "kb" => number * KB,
                 "mb" => number * MB,
                 "gb" => number * GB,
-                "tb" => number * TB,
+                // "tb" => number * TB,
                 "k" | "kib" => number * KIB,
                 "m" | "mib" => number * MIB,
                 "g" | "gib" => number * GIB,
-                "t" | "tib" => number * TIB,
+                // "t" | "tib" => number * TIB,
                 _ => continue,
             };
             return Some(bytes);
@@ -68,11 +68,11 @@ pub fn to_sectors(
                 "kb" => number * KB / SECTOR_SIZE,
                 "mb" => number * MB / SECTOR_SIZE,
                 "gb" => number * GB / SECTOR_SIZE,
-                "tb" => number * TB / SECTOR_SIZE,
+                // "tb" => number * TB / SECTOR_SIZE,
                 "k" | "kib" => number * KIB / SECTOR_SIZE,
                 "m" | "mib" => number * MIB / SECTOR_SIZE,
                 "g" | "gib" => number * GIB / SECTOR_SIZE,
-                "t" | "tib" => number * TIB / SECTOR_SIZE,
+                // "t" | "tib" => number * TIB / SECTOR_SIZE,
                 "s" | "sectors" => {
                     return Some(number);
                 }
