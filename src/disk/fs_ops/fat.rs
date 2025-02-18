@@ -127,23 +127,23 @@ pub struct FatFs {
     /// FAT表大小
     fat_size: u32,
     /// 总扇区数
-    tot_sec: u32,
+    total_sector: u32,
     /// 数据部分扇区数
-    data_sec: u32,
+    data_sector: u32,
     /// FAT表起始扇区
     fat_start: u32,
     /// 数据部分起始扇区
     data_start: u32,
     /// 有效簇号的最大值
-    max_clus: u32,
+    max_cluster: u32,
     /// 每扇区字节数
-    bytes_per_clus: usize,
+    bytes_per_cluster: usize,
     /// 每簇扇区数
-    sec_per_clus: usize,
+    sector_per_cluster: usize,
     /// 每扇区字节数
     bytes_per_sec: usize,
     /// 每簇目录项数
-    dir_per_clus: u16,
+    entry_per_cluster: u16,
 
     fs_type: FatFsType,
     bpb: BPB,
@@ -154,30 +154,30 @@ pub struct BPB {
     boot_jmp: [u8; 3],
     oem_name: [u8; 8],
     bytes_per_sec: u16,
-    sec_per_clus: u8,
-    rsvd_sec_cnt: u16,
+    sector_per_cluster: u8,
+    reserved_sector_count: u16,
     num_fats: u8,
-    root_ent_cnt: u16,
-    tot_sec16: u16,
+    root_entry_count: u16,
+    total_sector_16: u16,
     media: u8,
-    fat_sz16: u16,
-    sec_per_trk: u16,
+    fat_size_16: u16,
+    sector_per_trunk: u16,
     num_heads: u16,
-    hidd_sec: u32,
-    tot_sec32: u32,
-    fat_sz32: u32,
-    ext_flags: u16,
-    fs_ver: u16,
-    root_clus: u32,
+    hidden_sector: u32,
+    total_sector_32: u32,
+    fat_size_32: u32,
+    extension_flags: u16,
+    fs_version: u16,
+    root_cluster: u32,
     fs_info: u16,
-    bk_boot_sec: u16,
+    backup_boot_sector: u16,
     reserved: [u8; 12],
-    drv_num: u8,
+    drive_number: u8,
     reserved1: u8,
     boot_sig: u8,
-    vol_id: u32,
-    vol_lab: [u8; 11],
-    fil_sys_type: [u8; 8],
+    volume_id: u32,
+    volume_label: [u8; 11],
+    file_system_type: [u8; 8],
     #[serde(with = "BigArray")]
     boot_code: [u8; 420],
     signature: u16,
@@ -189,30 +189,30 @@ impl BPB {
             boot_jmp: [0u8; 3],
             oem_name: [0u8; 8],
             bytes_per_sec: 0,
-            sec_per_clus: 0,
-            rsvd_sec_cnt: 0,
+            sector_per_cluster: 0,
+            reserved_sector_count: 0,
             num_fats: 0,
-            root_ent_cnt: 0,
-            tot_sec16: 0,
+            root_entry_count: 0,
+            total_sector_16: 0,
             media: 0,
-            fat_sz16: 0,
-            sec_per_trk: 0,
+            fat_size_16: 0,
+            sector_per_trunk: 0,
             num_heads: 0,
-            hidd_sec: 0,
-            tot_sec32: 0,
-            fat_sz32: 0,
-            ext_flags: 0,
-            fs_ver: 0,
-            root_clus: 0,
+            hidden_sector: 0,
+            total_sector_32: 0,
+            fat_size_32: 0,
+            extension_flags: 0,
+            fs_version: 0,
+            root_cluster: 0,
             fs_info: 0,
-            bk_boot_sec: 0,
+            backup_boot_sector: 0,
             reserved: [0u8; 12],
-            drv_num: 0,
+            drive_number: 0,
             reserved1: 0,
             boot_sig: 0,
-            vol_id: 0,
-            vol_lab: [0u8; 11],
-            fil_sys_type: [0u8; 8],
+            volume_id: 0,
+            volume_label: [0u8; 11],
+            file_system_type: [0u8; 8],
             boot_code: [0u8; 420],
             signature: 0,
         }
@@ -226,66 +226,66 @@ impl BPB {
                     "volume_label" => {
                         let label = parts[1].as_bytes();
                         for (i, &byte) in label.iter().enumerate().take(11) {
-                            self.vol_lab[i] = byte;
+                            self.volume_label[i] = byte;
                         }
                     }
                     "bytes_per_sec" => {
                         self.bytes_per_sec = parts[1].parse().unwrap_or(SECTOR_SIZE as u16);
                     }
                     "sec_per_clus" => {
-                        self.sec_per_clus = parts[1].parse().unwrap_or(1);
+                        self.sector_per_cluster = parts[1].parse().unwrap_or(1);
                     }
                     "rsvd_sec_cnt" => {
-                        self.rsvd_sec_cnt = parts[1].parse().unwrap_or(1);
+                        self.reserved_sector_count = parts[1].parse().unwrap_or(1);
                     }
                     "num_fats" => {
                         self.num_fats = parts[1].parse().unwrap_or(2);
                     }
                     "root_ent_cnt" => {
-                        self.root_ent_cnt = parts[1].parse().unwrap_or(512);
+                        self.root_entry_count = parts[1].parse().unwrap_or(512);
                     }
                     "media" => {
                         self.media = parts[1].parse().unwrap_or(0xf8);
                     }
                     "sec_per_trk" => {
-                        self.sec_per_trk = parts[1].parse().unwrap_or(63);
+                        self.sector_per_trunk = parts[1].parse().unwrap_or(63);
                     }
                     "num_heads" => {
                         self.num_heads = parts[1].parse().unwrap_or(255);
                     }
                     "hidd_sec" => {
-                        self.hidd_sec = parts[1].parse().unwrap_or(0);
+                        self.hidden_sector = parts[1].parse().unwrap_or(0);
                     }
                     "ext_flags" => {
-                        self.ext_flags = parts[1].parse().unwrap_or(0);
+                        self.extension_flags = parts[1].parse().unwrap_or(0);
                     }
                     "fs_ver" => {
-                        self.fs_ver = parts[1].parse().unwrap_or(0);
+                        self.fs_version = parts[1].parse().unwrap_or(0);
                     }
                     "root_clus" => {
-                        self.root_clus = parts[1].parse().unwrap_or(2);
+                        self.root_cluster = parts[1].parse().unwrap_or(2);
                     }
                     "fs_info" => {
                         self.fs_info = parts[1].parse().unwrap_or(1);
                     }
                     "bk_boot_sec" => {
-                        self.bk_boot_sec = parts[1].parse().unwrap_or(6);
+                        self.backup_boot_sector = parts[1].parse().unwrap_or(6);
                     }
                     "drv_num" => {
-                        self.drv_num = parts[1].parse().unwrap_or(0x80);
+                        self.drive_number = parts[1].parse().unwrap_or(0x80);
                     }
                     "boot_sig" => {
                         self.boot_sig = parts[1].parse().unwrap_or(0x29);
                     }
                     "vol_id" => {
-                        self.vol_id = parts[1]
+                        self.volume_id = parts[1]
                             .parse()
                             .unwrap_or(chrono::Utc::now().timestamp() as u32);
                     }
                     "vol_lab" => {
                         let label = parts[1].as_bytes();
                         for (i, &byte) in label.iter().enumerate().take(11) {
-                            self.vol_lab[i] = byte;
+                            self.volume_label[i] = byte;
                         }
                     }
                     "bootcode_bin" => {
@@ -569,10 +569,10 @@ impl FileSystem for FatFs {
         let bpb: BPB = deserialize(&buf).unwrap();
 
         let fatsz: u32;
-        if bpb.fat_sz16 != 0 {
-            fatsz = bpb.fat_sz16.into();
+        if bpb.fat_size_16 != 0 {
+            fatsz = bpb.fat_size_16.into();
         } else {
-            fatsz = bpb.fat_sz32;
+            fatsz = bpb.fat_size_32;
         }
         // 无FAT表则视作为未格式化
         if fatsz == 0 {
@@ -580,23 +580,23 @@ impl FileSystem for FatFs {
         }
 
         let total_sec: u32;
-        if bpb.tot_sec16 != 0 {
-            total_sec = bpb.tot_sec16.into();
+        if bpb.total_sector_16 != 0 {
+            total_sec = bpb.total_sector_16.into();
         } else {
-            total_sec = bpb.tot_sec32;
+            total_sec = bpb.total_sector_32;
         }
 
-        let root_dir_sectors: u32 = if bpb.root_ent_cnt == 0 {
+        let root_dir_sectors: u32 = if bpb.root_entry_count == 0 {
             0
         } else {
-            ((bpb.root_ent_cnt as u32 * 32) + (bpb.bytes_per_sec - 1) as u32)
+            ((bpb.root_entry_count as u32 * 32) + (bpb.bytes_per_sec - 1) as u32)
                 / bpb.bytes_per_sec as u32
         };
-        let fat_start: u32 = pos.start as u32 + bpb.rsvd_sec_cnt as u32 + root_dir_sectors;
+        let fat_start: u32 = pos.start as u32 + bpb.reserved_sector_count as u32 + root_dir_sectors;
         let data_start: u32 = (bpb.num_fats as u32 * fatsz) + fat_start;
         let data_sec = total_sec - data_start;
 
-        let count_of_clusters = data_sec / bpb.sec_per_clus as u32;
+        let count_of_clusters = data_sec / bpb.sector_per_cluster as u32;
         let fs_type = if count_of_clusters < 4085 {
             FatFsType::FAT12
         } else if count_of_clusters < 65525 {
@@ -606,16 +606,16 @@ impl FileSystem for FatFs {
         };
 
         self.fat_size = fatsz;
-        self.tot_sec = total_sec;
-        self.data_sec = data_sec;
+        self.total_sector = total_sec;
+        self.data_sector = data_sec;
         self.fat_start = fat_start;
         self.data_start = data_start;
         self.fs_type = fs_type;
-        self.max_clus = count_of_clusters + 1;
+        self.max_cluster = count_of_clusters + 1;
         self.bytes_per_sec = bpb.bytes_per_sec as usize;
-        self.sec_per_clus = bpb.sec_per_clus as usize;
-        self.bytes_per_clus = self.bytes_per_sec * self.sec_per_clus;
-        self.dir_per_clus = self.bytes_per_clus as u16 / 32;
+        self.sector_per_cluster = bpb.sector_per_cluster as usize;
+        self.bytes_per_cluster = self.bytes_per_sec * self.sector_per_cluster;
+        self.entry_per_cluster = self.bytes_per_cluster as u16 / 32;
         self.bpb = bpb;
 
         Ok(true)
@@ -641,24 +641,24 @@ impl FileSystem for FatFs {
             "fat12" => {
                 fat_type = FatFsType::FAT12;
                 // FAT12中一个簇号占12位(3/2字节)
-                bpb.fat_sz16 = ceil_div(MAX_FAT_ENTRY_12 * 3, 2 * SECTOR_SIZE as u16);
-                bpb.tot_sec16 = total_sectors as u16;
-                bpb.sec_per_clus = ceil_div(bpb.tot_sec16, MAX_FAT_ENTRY_12) as u8;
-                bpb.rsvd_sec_cnt = 1;
-                bpb.root_ent_cnt = 512;
+                bpb.fat_size_16 = ceil_div(MAX_FAT_ENTRY_12 * 3, 2 * SECTOR_SIZE as u16);
+                bpb.total_sector_16 = total_sectors as u16;
+                bpb.sector_per_cluster = ceil_div(bpb.total_sector_16, MAX_FAT_ENTRY_12) as u8;
+                bpb.reserved_sector_count = 1;
+                bpb.root_entry_count = 512;
                 bpb.media = 0xf8;
-                bpb.sec_per_trk = 63;
+                bpb.sector_per_trunk = 63;
                 bpb.num_heads = 255;
-                bpb.hidd_sec = 0;
-                bpb.tot_sec32 = 0;
-                bpb.fat_sz32 = 0;
+                bpb.hidden_sector = 0;
+                bpb.total_sector_32 = 0;
+                bpb.fat_size_32 = 0;
 
                 // 初始化FAT表
                 for i in 0..bpb.num_fats as usize {
                     disk.seek(
                         (pos.start as usize
-                            + bpb.rsvd_sec_cnt as usize
-                            + i * bpb.fat_sz16 as usize)
+                            + bpb.reserved_sector_count as usize
+                            + i * bpb.fat_size_16 as usize)
                             * SECTOR_SIZE,
                     )?;
                     disk.write(&mut [0xf8, 0xff, 0xff, 0xff, 0x0f])?;
@@ -666,24 +666,24 @@ impl FileSystem for FatFs {
             }
             "fat16" => {
                 fat_type = FatFsType::FAT16;
-                bpb.fat_sz16 = ceil_div(total_sectors as u16, MAX_FAT_ENTRY_16);
-                bpb.tot_sec16 = total_sectors as u16;
-                bpb.sec_per_clus = ceil_div(bpb.tot_sec16, MAX_FAT_ENTRY_16) as u8;
-                bpb.rsvd_sec_cnt = 1;
-                bpb.root_ent_cnt = 512;
+                bpb.fat_size_16 = ceil_div(total_sectors as u16, MAX_FAT_ENTRY_16);
+                bpb.total_sector_16 = total_sectors as u16;
+                bpb.sector_per_cluster = ceil_div(bpb.total_sector_16, MAX_FAT_ENTRY_16) as u8;
+                bpb.reserved_sector_count = 1;
+                bpb.root_entry_count = 512;
                 bpb.media = 0xf8;
-                bpb.sec_per_trk = 63;
+                bpb.sector_per_trunk = 63;
                 bpb.num_heads = 255;
-                bpb.hidd_sec = 0;
-                bpb.tot_sec32 = 0;
-                bpb.fat_sz32 = 0;
+                bpb.hidden_sector = 0;
+                bpb.total_sector_32 = 0;
+                bpb.fat_size_32 = 0;
 
                 // 初始化FAT表
                 for i in 0..bpb.num_fats as usize {
                     disk.seek(
                         (pos.start as usize
-                            + bpb.rsvd_sec_cnt as usize
-                            + i * bpb.fat_sz16 as usize)
+                            + bpb.reserved_sector_count as usize
+                            + i * bpb.fat_size_16 as usize)
                             * SECTOR_SIZE,
                     )?;
                     disk.write(&mut [0xf8, 0xff, 0xff, 0xff, 0xf8, 0xff])?;
@@ -691,35 +691,35 @@ impl FileSystem for FatFs {
             }
             "fat32" => {
                 fat_type = FatFsType::FAT32;
-                bpb.fat_sz16 = 0;
-                bpb.rsvd_sec_cnt = 32;
-                bpb.root_ent_cnt = 0;
-                bpb.tot_sec16 = 0;
+                bpb.fat_size_16 = 0;
+                bpb.reserved_sector_count = 32;
+                bpb.root_entry_count = 0;
+                bpb.total_sector_16 = 0;
                 // 有效值为0xf0,0xf8-0xff，0xf8表示不可移动磁盘
                 bpb.media = 0xf8;
-                bpb.sec_per_trk = 63;
+                bpb.sector_per_trunk = 63;
                 bpb.num_heads = 255;
-                bpb.hidd_sec = 0;
-                bpb.tot_sec32 = total_sectors as u32;
-                bpb.sec_per_clus = ceil_div(bpb.tot_sec32, MAX_FAT_ENTRY_32) as u8;
-                bpb.fat_sz32 = ceil_div(
-                    bpb.tot_sec32,
-                    bpb.sec_per_clus as u32 * (SECTOR_SIZE as u32 / 4),
+                bpb.hidden_sector = 0;
+                bpb.total_sector_32 = total_sectors as u32;
+                bpb.sector_per_cluster = ceil_div(bpb.total_sector_32, MAX_FAT_ENTRY_32) as u8;
+                bpb.fat_size_32 = ceil_div(
+                    bpb.total_sector_32,
+                    bpb.sector_per_cluster as u32 * (SECTOR_SIZE as u32 / 4),
                 );
-                bpb.ext_flags = 0;
-                bpb.fs_ver = 0;
+                bpb.extension_flags = 0;
+                bpb.fs_version = 0;
                 // 根目录簇号, 通常为2
-                bpb.root_clus = 2;
+                bpb.root_cluster = 2;
                 // FSINFO扇区号，通常为1
                 bpb.fs_info = 1;
                 // 备份引导扇区（0:无，6:在该分区的第6扇区）
-                bpb.bk_boot_sec = 6;
+                bpb.backup_boot_sector = 6;
                 // 驱动器为硬盘(0x80：0号硬盘)
-                bpb.drv_num = 0x80;
+                bpb.drive_number = 0x80;
                 // 使用时间戳作为卷ID
-                bpb.vol_id = chrono::Utc::now().timestamp() as u32;
-                bpb.vol_lab = *b"NO NAME    ";
-                bpb.fil_sys_type = *b"FAT32   ";
+                bpb.volume_id = chrono::Utc::now().timestamp() as u32;
+                bpb.volume_label = *b"NO NAME    ";
+                bpb.file_system_type = *b"FAT32   ";
 
                 let mut fs_info = [0u8; 512];
                 LittleEndian::write_u32(&mut fs_info[0..4], 0x41615252);
@@ -734,8 +734,8 @@ impl FileSystem for FatFs {
                 for i in 0..bpb.num_fats as usize {
                     disk.seek(
                         (pos.start as usize
-                            + bpb.rsvd_sec_cnt as usize
-                            + i * bpb.fat_sz32 as usize)
+                            + bpb.reserved_sector_count as usize
+                            + i * bpb.fat_size_32 as usize)
                             * SECTOR_SIZE,
                     )?;
                     disk.write(&mut [
@@ -1060,11 +1060,11 @@ impl ExtendInfo {
         let mut num = 0;
         loop {
             i += 1;
-            if i as usize >= clus.len() * fs.dir_per_clus as usize {
+            if i as usize >= clus.len() * fs.entry_per_cluster as usize {
                 break;
             }
-            clus_i = (i as u16 / fs.dir_per_clus) as usize;
-            num = i as u16 % fs.dir_per_clus;
+            clus_i = (i as u16 / fs.entry_per_cluster) as usize;
+            num = i as u16 % fs.entry_per_cluster;
             fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
 
             if buf[0] == 0xe5 || buf[0] == 0x00 || buf[0] == 0x05 {
@@ -1094,8 +1094,8 @@ impl ExtendInfo {
                     prepend_utf16_to_string(&ldir.name1, &mut fname);
 
                     i += 1;
-                    clus_i = (i as u16 / fs.dir_per_clus) as usize;
-                    num = i as u16 % fs.dir_per_clus;
+                    clus_i = (i as u16 / fs.entry_per_cluster) as usize;
+                    num = i as u16 % fs.entry_per_cluster;
                     fs.read_dir_entry(disk, clus[clus_i], num, &mut buf)?;
                     if ldir.ord & 0x40 == 0x40 || ldir.chksum != chksum {
                         break;
@@ -1506,15 +1506,15 @@ impl FatFs {
     pub fn new() -> Self {
         Self {
             fat_size: 0,
-            tot_sec: 0,
-            data_sec: 0,
+            total_sector: 0,
+            data_sector: 0,
             fat_start: 0,
             data_start: 0,
-            sec_per_clus: 0,
+            sector_per_cluster: 0,
             bytes_per_sec: SECTOR_SIZE,
-            max_clus: 0,
-            bytes_per_clus: 0,
-            dir_per_clus: 0,
+            max_cluster: 0,
+            bytes_per_cluster: 0,
+            entry_per_cluster: 0,
             fs_type: FatFsType::FAT32,
             bpb: BPB::new_empty(),
         }
@@ -1541,7 +1541,7 @@ impl FatFs {
         let mut num = 0;
 
         if let Some(last_num) = parent.last_num {
-            if last_num >= self.dir_per_clus {
+            if last_num >= self.entry_per_cluster {
                 let clus = self.alloc_clus(disk, *parent.cluster_list.last().unwrap(), false)?;
                 parent.cluster_list.push(clus);
                 parent.last_num = Some(1);
@@ -1552,14 +1552,14 @@ impl FatFs {
         }
 
         let mut clus = *parent.cluster_list.last().unwrap();
-        while num < self.dir_per_clus {
+        while num < self.entry_per_cluster {
             self.read_dir_entry(disk, clus, num, &mut buf)?;
             if buf[0] == 0 {
                 break;
             }
             num += 1;
         }
-        if num == self.dir_per_clus {
+        if num == self.entry_per_cluster {
             clus = self.alloc_clus(disk, clus, false)?;
             parent.cluster_list.push(clus);
             num = 0;
@@ -1602,7 +1602,7 @@ impl FatFs {
 
         let end = start + size;
         // 自req.offset开始size大小的数据所在的簇总数
-        let clus_count = ceil_div(end, self.bytes_per_clus) - (start / self.bytes_per_clus);
+        let clus_count = ceil_div(end, self.bytes_per_cluster) - (start / self.bytes_per_cluster);
 
         let mut buf = [0u8; 0x20];
 
@@ -1614,7 +1614,7 @@ impl FatFs {
         )?;
 
         // 该文件的要访问的簇的首项
-        let left = start / self.bytes_per_clus;
+        let left = start / self.bytes_per_cluster;
         // 该文件的要访问的簇的末项
         let right = left + clus_count;
         let mut offset = start; // 已处理部分在文件内的相对位置
@@ -1629,10 +1629,10 @@ impl FatFs {
             // 当前在访问的簇号
             let clus = extend_info.cluster_list[i];
             // 在簇内的相对位置
-            let position = offset % self.bytes_per_clus;
+            let position = offset % self.bytes_per_cluster;
             // 该簇中的在范围内的大小
-            let length = if position + left_size > self.bytes_per_clus {
-                self.bytes_per_clus - position
+            let length = if position + left_size > self.bytes_per_cluster {
+                self.bytes_per_cluster - position
             } else {
                 left_size
             };
@@ -1724,7 +1724,7 @@ impl FatFs {
                 "Invalid clus number!",
             ));
         }
-        Ok((clus as usize - 2) * self.sec_per_clus + self.data_start as usize)
+        Ok((clus as usize - 2) * self.sector_per_cluster + self.data_start as usize)
     }
 
     fn to_byte_cnt(&self, clus: u32) -> io::Result<usize> {
@@ -1760,8 +1760,8 @@ impl FatFs {
         };
         let mut position;
         let fat_cnt;
-        if self.bpb.ext_flags & (1 << 7) != 0 {
-            position = (self.fat_start as usize + (self.bpb.ext_flags & 0x07) as usize)
+        if self.bpb.extension_flags & (1 << 7) != 0 {
+            position = (self.fat_start as usize + (self.bpb.extension_flags & 0x07) as usize)
                 * self.bytes_per_sec
                 + clus as usize * n;
             fat_cnt = 1;
@@ -1834,7 +1834,7 @@ impl FatFs {
         }
         // 将新申请的簇内容清零
         disk.seek(self.to_byte_cnt(i as u32)?)?;
-        for _ in 0..self.sec_per_clus {
+        for _ in 0..self.sector_per_cluster {
             disk.write(&mut [0u8; SECTOR_SIZE])?;
         }
         Ok(i as u32)
